@@ -1,5 +1,4 @@
-const {
-    default: makeWASocket,
+import makeWASocket, {
     useMultiFileAuthState,
     delay,
     makeCacheableSignalKeyStore,
@@ -9,7 +8,7 @@ const {
     jidDecode,
     downloadContentFromMessage,
     getContentType,
-} = require('@whiskeysockets/baileys');
+} from '@whiskeysockets/baileys';
 
 const config = require('./config');
 const events = require('./inconnuboy');
