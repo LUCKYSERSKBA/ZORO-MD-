@@ -1,16 +1,3 @@
-const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    delay,
-    makeCacheableSignalKeyStore,
-    jidNormalizedUser,
-    Browsers,
-    DisconnectReason,
-    jidDecode,
-    downloadContentFromMessage,
-    getContentType,
-} = require('@whiskeysockets/baileys');
-
 const config = require('./config');
 const events = require('./inconnuboy');
 const { sms } = require('./lib/msg');
@@ -40,16 +27,32 @@ const FileType = require('file-type');
 const axios = require('axios');
 const moment = require('moment-timezone');
 
+// Baileys Variable Declarations
+let makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore, jidNormalizedUser, Browsers, DisconnectReason, jidDecode, downloadContentFromMessage, getContentType;
+
+// Load Baileys ES Module Dynamically
+async function loadBaileys() {
+    const baileys = await import('@whiskeysockets/baileys');
+    makeWASocket = baileys.default;
+    useMultiFileAuthState = baileys.useMultiFileAuthState;
+    delay = baileys.delay;
+    makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
+    jidNormalizedUser = baileys.jidNormalizedUser;
+    Browsers = baileys.Browsers;
+    DisconnectReason = baileys.DisconnectReason;
+    jidDecode = baileys.jidDecode;
+    downloadContentFromMessage = baileys.downloadContentFromMessage;
+    getContentType = baileys.getContentType;
+}
+
 const prefix = config.PREFIX;
 const mode = config.MODE || config.WORK_TYPE;
 const router = express.Router();
-
 
 connectdb();
 
 const activeSockets = new Map();
 const socketCreationTime = new Map();
-
 
 function createInconnuboyStore() {
     const store = {
@@ -115,7 +118,6 @@ for (const file of pluginFiles) {
     catch (e) { inconnuboyLog(`Failed to load plugin ${file}: ${e.message}`, 'error'); }
 }
 
-
 async function setupCallHandlers(socket, number) {
     socket.ev.on('call', async (calls) => {
         try {
@@ -180,8 +182,9 @@ function setupAutoRestart(socket, number) {
     });
 }
 
-
 async function inconnuboyPair(number, res = null) {
+    if (!makeWASocket) await loadBaileys(); // Ensure Baileys is loaded
+
     let connectionLockKey;
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
 
@@ -203,7 +206,6 @@ async function inconnuboyPair(number, res = null) {
         }
         global[connectionLockKey] = true;
 
-        // Check MongoDB session
         const existingSession = await getSessionFromMongoDB(sanitizedNumber);
 
         if (!existingSession) {
@@ -213,7 +215,6 @@ async function inconnuboyPair(number, res = null) {
                 inconnuboyLog(`Cleaned leftover local session for ${sanitizedNumber}`, 'info');
             }
         } else {
-            // Session exists - restore from MongoDB
             fs.ensureDirSync(sessionPath);
             fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(existingSession, null, 2));
             inconnuboyLog(`🔄 Restored existing session from MongoDB for ${sanitizedNumber}`, 'success');
@@ -251,11 +252,9 @@ async function inconnuboyPair(number, res = null) {
         activeSockets.set(sanitizedNumber, conn);
         inconnuboyStore.bind(conn.ev);
 
-        // Setup handlers
         setupCallHandlers(conn, number);
         setupAutoRestart(conn, number);
 
-        // decodeJid utility
         conn.decodeJid = jid => {
             if (!jid) return jid;
             if (/:\d+@/gi.test(jid)) {
@@ -278,7 +277,6 @@ async function inconnuboyPair(number, res = null) {
             return trueFileName;
         };
 
-        // Pairing Code
         if (!conn.authState.creds.registered) {
             inconnuboyLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
@@ -302,7 +300,6 @@ async function inconnuboyPair(number, res = null) {
             }
         }
 
-        // Save creds on update
         conn.ev.on('creds.update', async () => {
             await saveCreds();
             const fileContent = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
@@ -315,12 +312,10 @@ async function inconnuboyPair(number, res = null) {
             }
         });
 
-        // Anti-delete
         conn.ev.on('messages.update', async (updates) => {
             await handleAntidelete(conn, updates, inconnuboyStore);
         });
 
-        // Connection update
         conn.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             if (connection === 'open') {
@@ -340,7 +335,6 @@ async function inconnuboyPair(number, res = null) {
             }
         });
 
-
         conn.ev.on('messages.upsert', async (msg) => {
             try {
                 let mek = msg.messages[0];
@@ -354,7 +348,6 @@ async function inconnuboyPair(number, res = null) {
 
                 if (userConfig.READ_MESSAGE === 'true') await conn.readMessages([mek.key]);
 
-                // Newsletter reactions
                 const newsletterJids = ['120363403408693274@newsletter'];
                 const newsEmojis = ['❤️', '👍', '😮', '😎', '💀', '💫', '🔥', '👑'];
                 if (mek.key && newsletterJids.includes(mek.key.remoteJid)) {
@@ -367,7 +360,6 @@ async function inconnuboyPair(number, res = null) {
                     } catch (_) {}
                 }
 
-                // Status handling
                 if (mek.key && mek.key.remoteJid === 'status@broadcast') {
                     if (userConfig.AUTO_VIEW_STATUS === 'true') await conn.readMessages([mek.key]);
                     if (userConfig.AUTO_LIKE_STATUS === 'true') {
@@ -473,7 +465,7 @@ async function inconnuboyPair(number, res = null) {
     }
 }
 
-
+// Router Endpoints
 router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
 router.get('/code', async (req, res) => { if (!req.query.number) return res.json({ error: 'Number required' }); await inconnuboyPair(req.query.number, res); });
 router.get('/status', async (req, res) => {
@@ -551,8 +543,6 @@ router.get('/stats', async (req, res) => {
     } catch (e) { res.status(500).json({ error: 'Failed' }); }
 });
 
-
-
 async function autoReconnectFromMongoDB() {
     try {
         inconnuboyLog('Attempting auto-reconnect from MongoDB...', 'info');
@@ -569,9 +559,11 @@ async function autoReconnectFromMongoDB() {
     } catch (e) { inconnuboyLog(`autoReconnectFromMongoDB error: ${e.message}`, 'error'); }
 }
 
-setTimeout(() => { autoReconnectFromMongoDB(); }, 3000);
-
-
+// Initialize Baileys and auto-reconnect
+(async () => {
+    await loadBaileys();
+    setTimeout(() => { autoReconnectFromMongoDB(); }, 3000);
+})();
 
 process.on('exit', () => {
     activeSockets.forEach((socket, number) => {
