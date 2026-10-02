@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-   "@whiskeysockets/baileys": "^v7.0.0-rc.9",
+    "@aadhixd777/baileys": "latest",
     "axios": "^1.6.0",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
@@ -35,4 +35,3 @@
     "moment-timezone": "^0.6.0"
   }
 }
-
