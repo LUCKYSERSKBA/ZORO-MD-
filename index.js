@@ -164,7 +164,7 @@ async function checkAndInstallFFmpeg() {
 }
 
 // ============================================
-// WEB PAIRING ROUTE (FIXED & OPTIMIZED)
+// WEB PAIRING ROUTE (FULLY FIXED FOR LOGGING IN ISSUE)
 // ============================================
 function getSessionPath() {
     return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
@@ -192,7 +192,7 @@ app.get('/code', async (req, res) => {
     num = num.replace(/[^0-9]/g, '');
     const sessionDir = getSessionPath();
 
-    const { makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore } = require("@aadhixd777/baileys");
+    const { makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore, Browsers } = require("@aadhixd777/baileys");
     const pino = require('pino');
 
     try {
@@ -205,33 +205,37 @@ app.get('/code', async (req, res) => {
             },
             printQRInTerminal: false,
             logger: pino({ level: "fatal" }),
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: Browsers.macOS("Chrome"),
             syncFullHistory: false,
             markOnlineOnConnect: false
         });
 
         Sock.ev.on('creds.update', saveCreds);
 
-        if (!Sock.authState.creds.registered) {
-            await delay(1500);
-            try {
-                let code = await Sock.requestPairingCode(num);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-
-                if (!res.headersSent) {
-                    res.json({ code: code, status: true });
-                }
-            } catch (err) {
-                console.error("Error requesting pairing code:", err);
-                removeSessionFolder(sessionDir);
-                if (!res.headersSent) {
-                    return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
-                }
-            }
-        }
+        let codeSent = false;
 
         Sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
+            const { connection, lastDisconnect, qr } = update;
+
+            // Socket പൂർണ്ണമായി റെഡിയായ ശേഷം മാത്രം pairing code നൽകുന്നു
+            if ((qr || connection === 'connecting') && !Sock.authState.creds.registered && !codeSent) {
+                codeSent = true;
+                await delay(3000);
+                try {
+                    let code = await Sock.requestPairingCode(num);
+                    code = code?.match(/.{1,4}/g)?.join("-") || code;
+
+                    if (!res.headersSent) {
+                        res.json({ code: code, status: true });
+                    }
+                } catch (err) {
+                    console.error("Error requesting pairing code:", err);
+                    removeSessionFolder(sessionDir);
+                    if (!res.headersSent) {
+                        return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
+                    }
+                }
+            }
 
             if (connection === 'open') {
                 await delay(3000);
@@ -297,7 +301,7 @@ async function startBot() {
         DisconnectReason,
         fetchLatestBaileysVersion,
         makeCacheableSignalKeyStore,
-        delay
+        Browsers
     } = require("@aadhixd777/baileys");
     const NodeCache = require("node-cache");
     const pino = require("pino");
@@ -336,7 +340,7 @@ async function startBot() {
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: Browsers.macOS("Chrome"),
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
