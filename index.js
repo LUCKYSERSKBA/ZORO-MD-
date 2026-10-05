@@ -25,7 +25,7 @@ async function downloadAndExtractModules() {
     const zipUrl = settings.updateZipUrl;
     
     if (!zipUrl) {
-        console.log('⚠ No updateZipUrl configured in settings.js');
+        console.log('⚠️ No updateZipUrl configured in settings.js');
         return false;
     }
 
@@ -149,7 +149,7 @@ async function checkAndInstallFFmpeg() {
     }
 }
 
-// Active Sessions Store (Multi-Session Map)
+// Active Sessions Store
 const activeSessions = new Map();
 
 // ============================================
@@ -158,6 +158,25 @@ const activeSessions = new Map();
 async function startBot() {
     await downloadAndExtractModules().catch(() => {});
     await checkAndInstallFFmpeg();
+
+    require('./settings');
+    const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
+    const {
+        default: makeWASocket,
+        useMultiFileAuthState,
+        DisconnectReason,
+        fetchLatestBaileysVersion,
+        jidDecode,
+        jidNormalizedUser,
+        makeCacheableSignalKeyStore
+    } = require("@aadhixd777/baileys");
+    const NodeCache = require("node-cache");
+    const pino = require("pino");
+    const store = require('./lib/lightweight_store');
+    
+    store.readFromFile();
+    const settings = require('./settings');
+    setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
 
     const express = require('express');
     const app = express();
@@ -201,14 +220,14 @@ async function startBot() {
                         const codeDiv = document.getElementById('code');
                         const btn = document.getElementById('submitBtn');
                         
-                        codeDiv.innerHTML = "⏳ Initializing Fast Socket... Please wait.";
+                        codeDiv.innerHTML = "⏳ Generating Pairing Code... Please wait.";
                         btn.disabled = true;
                         
                         try {
                             const res = await fetch('/code?phone=' + phone);
                             const data = await res.json();
                             if (data.code) {
-                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Enter this code in WhatsApp quickly!</small>";
+                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Type this in WhatsApp Linked Devices immediately!</small>";
                             } else {
                                 codeDiv.innerHTML = "<span style='color:#ef4444;'>Error: " + (data.error || "Failed") + "</span>";
                             }
@@ -224,7 +243,7 @@ async function startBot() {
         `);
     });
 
-    // Ultra-Fast Pairing Route
+    // Instant & Stable Pairing Route
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
@@ -233,10 +252,10 @@ async function startBot() {
         try {
             let sock = await startClientSession(phoneNum);
             
-            // Wait for WebSocket to be open
-            let maxWait = 10;
+            // Wait until socket is fully ready
+            let maxWait = 25;
             while (sock.ws.readyState !== 1 && maxWait > 0) {
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, 600));
                 maxWait--;
             }
 
@@ -259,21 +278,9 @@ async function startBot() {
 
     app.listen(port, () => console.log(`🚀 Multi-Session Web Pairing server running on port ${port}`));
 
-    const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
-    const { 
-        default: makeWASocket, 
-        useMultiFileAuthState, 
-        DisconnectReason, 
-        fetchLatestBaileysVersion, 
-        makeCacheableSignalKeyStore 
-    } = require("@aadhixd777/baileys");
-    const NodeCache = require("node-cache");
-    const pino = require("pino");
-
     global.botname = "ZORO BOT";
     global.themeemoji = "•";
 
-    // Optimized Lightweight Session Starter
     async function startClientSession(sessionIdName) {
         if (activeSessions.has(sessionIdName)) {
             const existingSock = activeSessions.get(sessionIdName);
@@ -301,15 +308,29 @@ async function startBot() {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
             },
-            markOnlineOnConnect: false, // Prevents unnecessary traffic during pairing
-            generateHighQualityLinkPreview: false,
-            syncFullHistory: false,
-            defaultQueryTimeoutMs: 20000,
-            connectTimeoutMs: 20000,
+            markOnlineOnConnect: true,
+            generateHighQualityLinkPreview: true,
+            syncFullHistory: false, // Turned off to speed up immediate connection
+            getMessage: async (key) => {
+                let jid = jidNormalizedUser(key.remoteJid);
+                let msg = await store.loadMessage(jid, key.id);
+                return msg?.message || "";
+            },
             msgRetryCounterCache,
+            defaultQueryTimeoutMs: 60000,
+            connectTimeoutMs: 60000,
         });
 
+        store.bind(clientSock.ev);
         activeSessions.set(sessionIdName, clientSock);
+
+        clientSock.decodeJid = (jid) => {
+            if (!jid) return jid;
+            if (/:\d+@/gi.test(jid)) {
+                let decode = jidDecode(jid) || {};
+                return decode.user && decode.server && decode.user + '@' + decode.server || jid;
+            } else return jid;
+        };
 
         clientSock.ev.on('messages.upsert', async chatUpdate => {
             try {
@@ -327,7 +348,7 @@ async function startBot() {
         clientSock.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection === "open") {
-                console.log(`✅ Session successfully linked for: ${sessionIdName}`);
+                console.log(`✅ Session successfully linked & connected for: ${sessionIdName}`);
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -350,7 +371,7 @@ async function startBot() {
         return clientSock;
     }
 
-    // Auto-load existing sessions from folder if any exist
+    // Auto restore previous sessions on startup
     if (fs.existsSync('./sessions')) {
         const existingFolders = fs.readdirSync('./sessions');
         for (const folder of existingFolders) {
@@ -368,11 +389,5 @@ startBot().catch(error => {
     process.exit(1);
 });
 
-// Memory Guard: Clean up or restart if RAM gets too high to prevent free tier crashes
-setInterval(() => {
-    const used = process.memoryUsage().rss / 1024 / 1024;
-    if (used > 450) {
-        console.log('⚠️ RAM usage high, restarting process cleanly...');
-        process.exit(1);
-    }
-}, 30_000);
+process.on('uncaughtException', (err) => {});
+process.on('unhandledRejection', (err) => {});
