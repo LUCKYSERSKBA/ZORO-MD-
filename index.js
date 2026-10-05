@@ -236,7 +236,7 @@ app.get('/code', async (req, res) => {
     }
 
     num = num.replace(/[^0-9]/g, '');
-    const tempSessionId = `pairing_${Date.now()}`;
+    const pairingSessionId = `pairing_${num}_${Date.now()}`;
 
     const { 
         makeWASocket, 
@@ -252,7 +252,7 @@ app.get('/code', async (req, res) => {
             await mongoose.connect(process.env.MONGODB_URI);
         }
 
-        const { state, saveCreds, clearSession } = await useMongoDBAuthState(tempSessionId);
+        const { state, saveCreds, clearSession } = await useMongoDBAuthState(pairingSessionId);
         const { version } = await fetchLatestBaileysVersion();
 
         const Sock = makeWASocket({
@@ -270,7 +270,7 @@ app.get('/code', async (req, res) => {
 
         Sock.ev.on('creds.update', saveCreds);
 
-        await delay(1500);
+        await delay(2000);
         if (!Sock.authState.creds.registered) {
             try {
                 let code = await Sock.requestPairingCode(num);
@@ -292,7 +292,7 @@ app.get('/code', async (req, res) => {
             if (connection === 'open') {
                 await delay(5000);
                 try {
-                    const credsRecord = await SessionModel.findById(`creds_${tempSessionId}`);
+                    const credsRecord = await SessionModel.findById(`creds_${pairingSessionId}`);
                     if (credsRecord) {
                         const credsBuffer = Buffer.from(JSON.stringify(credsRecord.data));
                         const base64Session = credsBuffer.toString('base64');
@@ -306,13 +306,12 @@ app.get('/code', async (req, res) => {
                 } catch (e) {
                     console.error("Session Send Error:", e);
                 } finally {
-                    await delay(2000);
+                    await delay(3000);
                     try { await Sock.ws.close(); } catch {}
-                    await clearSession();
                 }
             } else if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode === 401 || statusCode === 500) {
+                if (statusCode === 401) {
                     await clearSession();
                 }
             }
