@@ -201,14 +201,14 @@ async function startBot() {
                         const codeDiv = document.getElementById('code');
                         const btn = document.getElementById('submitBtn');
                         
-                        codeDiv.innerHTML = "⏳ Connecting to WhatsApp... Please wait (~10s).";
+                        codeDiv.innerHTML = "⏳ Initializing Fast Socket... Please wait.";
                         btn.disabled = true;
                         
                         try {
                             const res = await fetch('/code?phone=' + phone);
                             const data = await res.json();
                             if (data.code) {
-                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Type this code in WhatsApp. It will connect instantly!</small>";
+                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Enter this code in WhatsApp quickly!</small>";
                             } else {
                                 codeDiv.innerHTML = "<span style='color:#ef4444;'>Error: " + (data.error || "Failed") + "</span>";
                             }
@@ -224,7 +224,7 @@ async function startBot() {
         `);
     });
 
-    // Highly Safe & Fixed Multi-Session Pairing Route
+    // Ultra-Fast Pairing Route
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
@@ -233,23 +233,20 @@ async function startBot() {
         try {
             let sock = await startClientSession(phoneNum);
             
-            // Wait until the socket ws is fully open to prevent Error 428
-            let maxWait = 15; // 15 seconds max wait
+            // Wait for WebSocket to be open
+            let maxWait = 10;
             while (sock.ws.readyState !== 1 && maxWait > 0) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 500));
                 maxWait--;
             }
 
             if (sock.ws.readyState !== 1) {
-                return res.json({ error: "Connection timeout. Please try again." });
+                return res.json({ error: "Connection timeout. Please retry." });
             }
 
             if (sock.authState && sock.authState.creds && sock.authState.creds.registered) {
                 return res.json({ code: "Already Registered & Connected!" });
             }
-
-            // Small delay to stabilize socket before requesting code
-            await new Promise(resolve => setTimeout(resolve, 2000));
 
             let code = await sock.requestPairingCode(phoneNum);
             code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -276,7 +273,7 @@ async function startBot() {
     global.botname = "ZORO BOT";
     global.themeemoji = "•";
 
-    // Function to initialize individual user session dynamically
+    // Optimized Lightweight Session Starter
     async function startClientSession(sessionIdName) {
         if (activeSessions.has(sessionIdName)) {
             const existingSock = activeSessions.get(sessionIdName);
@@ -304,12 +301,11 @@ async function startBot() {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
             },
-            markOnlineOnConnect: true,
-            generateHighQualityLinkPreview: true,
+            markOnlineOnConnect: false, // Prevents unnecessary traffic during pairing
+            generateHighQualityLinkPreview: false,
             syncFullHistory: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 15000,
+            defaultQueryTimeoutMs: 20000,
+            connectTimeoutMs: 20000,
             msgRetryCounterCache,
         });
 
@@ -331,7 +327,7 @@ async function startBot() {
         clientSock.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection === "open") {
-                console.log(`✅ Session connected successfully for: ${sessionIdName}`);
+                console.log(`✅ Session successfully linked for: ${sessionIdName}`);
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
