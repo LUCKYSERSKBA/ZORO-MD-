@@ -2,206 +2,180 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const { execSync } = require('child_process');
-const express = require('express');
-const cors = require('cors');
-const mongoose = require('mongoose');
 require('dotenv').config();
 
-const app = express();
-const port = process.env.PORT || 8000;
-app.use(cors());
-app.use(express.json());
-
-app.get('/', (req, res) => res.json({ status: true, message: "Zoro-MD Multi-Session Engine Active!" }));
-
 // ============================================
-// MONGODB MONGOOSE AUTH STATE FOR BAILEYS
-// ============================================
-const SessionSchema = new mongoose.Schema({
-    _id: { type: String, required: true },
-    data: { type: Object, required: true }
-});
-const SessionModel = mongoose.models.ZoroSession || mongoose.model('ZoroSession', SessionSchema);
-
-async function useMongoDBAuthState(sessionId) {
-    if (mongoose.connection.readyState === 0) {
-        await mongoose.connect(process.env.MONGODB_URI, {
-            serverSelectionTimeoutMS: 30000,
-            socketTimeoutMS: 45000,
-        });
-    }
-
-    const writeData = async (data, id) => {
-        const documents = JSON.parse(JSON.stringify(data, (_, v) => typeof v === 'bigint' ? v.toString() : v));
-        await SessionModel.findByIdAndUpdate(id, { data: documents }, { upsert: true, setDefaultsOnInsert: true });
-    };
-
-    const readData = async (id) => {
-        try {
-            const doc = await SessionModel.findById(id);
-            if (!doc) return null;
-            return JSON.parse(JSON.stringify(doc.data), (_, v) => {
-                if (typeof v === 'string' && /^\d+n$/.test(v)) return BigInt(v.slice(0, -1));
-                return v;
-            });
-        } catch (error) {
-            return null;
-        }
-    };
-
-    const removeData = async (id) => {
-        try {
-            await SessionModel.findByIdAndDelete(id);
-        } catch (error) {}
-    };
-
-    const credsId = `creds_${sessionId}`;
-    let creds = await readData(credsId);
-    
-    const { initAuthCreds } = require("@aadhixd777/baileys");
-    if (!creds) {
-        creds = initAuthCreds();
-        await writeData(creds, credsId);
-    }
-
-    return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    for (const id of ids) {
-                        const key = `${type}_${sessionId}_${id}`;
-                        let value = await readData(key);
-                        if (type === 'app-state-sync-key' && value) {
-                            value = require('@aadhixd777/baileys').proto.Message.AppStateSyncKeyData.fromObject(value);
-                        }
-                        data[id] = value;
-                    }
-                    return data;
-                },
-                set: async (data) => {
-                    const tasks = [];
-                    for (const category of Object.keys(data)) {
-                        for (const id of Object.keys(data[category])) {
-                            const value = data[category][id];
-                            const key = `${category}_${sessionId}_${id}`;
-                            if (value) {
-                                tasks.push(writeData(value, key));
-                            } else {
-                                tasks.push(removeData(key));
-                            }
-                        }
-                    }
-                    await Promise.all(tasks);
-                }
-            }
-        },
-        saveCreds: async () => {
-            return await writeData(creds, credsId);
-        },
-        clearSession: async () => {
-            await removeData(credsId);
-        }
-    };
-}
-
-// ============================================
-// MODULE UPDATER
+// MODULE UPDATER - RUNS ONLY ON FIRST START
 // ============================================
 async function downloadAndExtractModules() {
     const settingsPath = path.join(__dirname, 'settings.js');
     const modulesInstalledFlag = path.join(__dirname, '.modules_installed');
     
-    if (fs.existsSync(modulesInstalledFlag)) return true;
-    if (!fs.existsSync(settingsPath)) return false;
+    if (fs.existsSync(modulesInstalledFlag)) {
+        console.log('✅ Modules already installed, skipping download');
+        return true;
+    }
+    
+    if (!fs.existsSync(settingsPath)) {
+        console.log('⚠️ settings.js not found, skipping module update');
+        return false;
+    }
     
     const settings = require('./settings');
     const zipUrl = settings.updateZipUrl;
-    if (!zipUrl) return false;
+    
+    if (!zipUrl) {
+        console.log('⚠️ No updateZipUrl configured in settings.js');
+        return false;
+    }
 
     const TEMP_DIR = path.join(__dirname, 'temp_update');
     const ZIP_FILE = path.join(TEMP_DIR, 'modules.zip');
     const EXTRACT_DIR = path.join(TEMP_DIR, 'extracted');
 
+    console.log('📥 DOWNLOADING MODULES FROM REPOSITORY...');
+    console.log(`📍 URL: ${zipUrl}`);
+
     try {
-        if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+        if (!fs.existsSync(TEMP_DIR)) {
+            fs.mkdirSync(TEMP_DIR, { recursive: true });
+        }
 
         const response = await axios({
             method: 'get',
             url: zipUrl,
             responseType: 'arraybuffer',
             timeout: 120000,
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         });
 
         fs.writeFileSync(ZIP_FILE, response.data);
-        if (fs.existsSync(EXTRACT_DIR)) fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
+        console.log('✅ DOWNLOAD COMPLETE!');
+
+        if (fs.existsSync(EXTRACT_DIR)) {
+            fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
+        }
         fs.mkdirSync(EXTRACT_DIR, { recursive: true });
 
+        console.log('📦 EXTRACTING FILES...');
         execSync(`unzip -o "${ZIP_FILE}" -d "${EXTRACT_DIR}"`, { stdio: 'pipe' });
 
         const extractedFolders = fs.readdirSync(EXTRACT_DIR);
         const moduleFolder = extractedFolders.find(f => f.includes('ZORO-MD-MODULES') || f.includes('MODULES'));
-        if (!moduleFolder) return false;
+        
+        if (!moduleFolder) {
+            console.log('❌ Could not find modules folder in extracted files');
+            return false;
+        }
 
         const sourcePath = path.join(EXTRACT_DIR, moduleFolder);
         const basePath = __dirname;
+
         const foldersToSync = ['lib', 'plugins', 'data', 'media'];
         const filesToSync = ['main.js', 'config.js'];
 
         for (const folder of foldersToSync) {
             const sourceFolder = path.join(sourcePath, folder);
             const destFolder = path.join(basePath, folder);
+            
             if (fs.existsSync(sourceFolder)) {
-                if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true });
+                if (!fs.existsSync(destFolder)) {
+                    fs.mkdirSync(destFolder, { recursive: true });
+                }
+                
                 fs.cpSync(sourceFolder, destFolder, { recursive: true, force: true });
+                console.log(`✅ SYNCED FOLDER: ${folder}`);
             }
         }
 
         for (const file of filesToSync) {
             const sourceFile = path.join(sourcePath, file);
             const destFile = path.join(basePath, file);
-            if (fs.existsSync(sourceFile)) fs.copyFileSync(sourceFile, destFile);
+            
+            if (fs.existsSync(sourceFile)) {
+                fs.copyFileSync(sourceFile, destFile);
+                console.log(`✅ SYNCED FILE: ${file}`);
+            }
         }
 
         fs.rmSync(TEMP_DIR, { recursive: true, force: true });
         fs.writeFileSync(modulesInstalledFlag, new Date().toISOString());
+        
+        console.log('🎉 MODULES UPDATED SUCCESSFULLY!');
         return true;
+
     } catch (error) {
-        if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+        console.error('❌ Error updating modules:', error.message);
+        if (fs.existsSync(TEMP_DIR)) {
+            fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+        }
         return false;
     }
 }
 
 // ============================================
-// FFMPEG CHECK
+// FFMPEG CHECK AND AUTO-INSTALL
 // ============================================
 async function checkAndInstallFFmpeg() {
+    console.log('🎬 CHECKING FFMPEG INSTALLATION...');
+    
     const ffmpegDir = path.join(__dirname, 'ffmpeg_bin');
     const ffmpegPath = path.join(ffmpegDir, 'ffmpeg');
     const ffprobePath = path.join(ffmpegDir, 'ffprobe');
     
     try {
-        execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
+        const result = execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
+        const version = result.split('\n')[0];
+        console.log(`✅ FFMPEG FOUND IN SYSTEM: ${version.substring(0, 50)}...`);
         return true;
-    } catch (error) {}
-    
-    if (fs.existsSync(ffmpegPath)) {
-        process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
-        return true;
+    } catch (error) {
+        console.log('⚠️ FFmpeg not found in system PATH');
     }
     
+    if (fs.existsSync(ffmpegPath)) {
+        try {
+            const result = execSync(`"${ffmpegPath}" -version`, { stdio: 'pipe', encoding: 'utf8' });
+            const version = result.split('\n')[0];
+            console.log(`✅ FFMPEG FOUND LOCALLY: ${version.substring(0, 50)}...`);
+            
+            process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+            console.log('✅ ADDED FFMPEG TO PATH');
+            return true;
+        } catch (error) {
+            console.log('⚠️ Local FFmpeg exists but not working, will re-download');
+        }
+    }
+    
+    console.log('📥 DOWNLOADING FFMPEG AUTOMATICALLY...');
+    
     try {
-        if (!fs.existsSync(ffmpegDir)) fs.mkdirSync(ffmpegDir, { recursive: true });
+        if (!fs.existsSync(ffmpegDir)) {
+            fs.mkdirSync(ffmpegDir, { recursive: true });
+        }
+        
         const FFMPEG_URL = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz';
         const tempFile = path.join(__dirname, 'ffmpeg_temp.tar.xz');
         const extractDir = path.join(__dirname, 'ffmpeg_extract');
         
-        const response = await axios({ method: 'get', url: FFMPEG_URL, responseType: 'arraybuffer', timeout: 300000 });
-        fs.writeFileSync(tempFile, response.data);
+        const response = await axios({
+            method: 'get',
+            url: FFMPEG_URL,
+            responseType: 'arraybuffer',
+            timeout: 300000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
         
-        if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+        fs.writeFileSync(tempFile, response.data);
+        console.log('✅ DOWNLOAD COMPLETE!');
+        
+        console.log('📦 EXTRACTING FFMPEG...');
+        if (fs.existsSync(extractDir)) {
+            fs.rmSync(extractDir, { recursive: true, force: true });
+        }
         fs.mkdirSync(extractDir, { recursive: true });
         
         execSync(`tar -xf "${tempFile}" -C "${extractDir}"`, { stdio: 'pipe' });
@@ -212,150 +186,166 @@ async function checkAndInstallFFmpeg() {
         if (ffmpegFolder) {
             const srcFFmpeg = path.join(extractDir, ffmpegFolder, 'ffmpeg');
             const srcFFprobe = path.join(extractDir, ffmpegFolder, 'ffprobe');
-            if (fs.existsSync(srcFFmpeg)) { fs.copyFileSync(srcFFmpeg, ffmpegPath); fs.chmodSync(ffmpegPath, '755'); }
-            if (fs.existsSync(srcFFprobe)) { fs.copyFileSync(srcFFprobe, ffprobePath); fs.chmodSync(ffprobePath, '755'); }
+            
+            if (fs.existsSync(srcFFmpeg)) {
+                fs.copyFileSync(srcFFmpeg, ffmpegPath);
+                fs.chmodSync(ffmpegPath, '755');
+                console.log('✅ FFmpeg INSTALLED');
+            }
+            
+            if (fs.existsSync(srcFFprobe)) {
+                fs.copyFileSync(srcFFprobe, ffprobePath);
+                fs.chmodSync(ffprobePath, '755');
+                console.log('✅ FFprobe INSTALLED');
+            }
         }
         
         fs.unlinkSync(tempFile);
         fs.rmSync(extractDir, { recursive: true, force: true });
+        
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
+        console.log('✅ ADDED FFMPEG TO PATH');
         return true;
+        
     } catch (error) {
+        console.error('❌ Failed to download FFmpeg:', error.message);
         return false;
     }
 }
 
 // ============================================
-// STABLE MONGODB PAIRING ROUTE
-// ============================================
-app.get('/code', async (req, res) => {
-    let num = req.query.number;
-
-    if (!num) {
-        return res.status(400).json({ error: "Please provide a valid phone number." });
-    }
-
-    num = num.replace(/[^0-9]/g, '');
-    const pairingSessionId = `pairing_${num}_${Date.now()}`;
-
-    const { 
-        makeWASocket, 
-        delay, 
-        makeCacheableSignalKeyStore, 
-        Browsers, 
-        fetchLatestBaileysVersion 
-    } = require("@aadhixd777/baileys");
-    const pino = require('pino');
-
-    try {
-        if (mongoose.connection.readyState === 0 && process.env.MONGODB_URI) {
-            await mongoose.connect(process.env.MONGODB_URI);
-        }
-
-        const { state, saveCreds, clearSession } = await useMongoDBAuthState(pairingSessionId);
-        const { version } = await fetchLatestBaileysVersion();
-
-        const Sock = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
-            },
-            printQRInTerminal: false,
-            logger: pino({ level: "fatal" }),
-            browser: Browsers.macOS("Chrome"),
-            syncFullHistory: false,
-            markOnlineOnConnect: false
-        });
-
-        Sock.ev.on('creds.update', saveCreds);
-
-        await delay(2000);
-        if (!Sock.authState.creds.registered) {
-            try {
-                let code = await Sock.requestPairingCode(num);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-                if (!res.headersSent) {
-                    res.json({ code: code, status: true });
-                }
-            } catch (err) {
-                await clearSession();
-                if (!res.headersSent) {
-                    return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
-                }
-            }
-        }
-
-        Sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-
-            if (connection === 'open') {
-                await delay(5000);
-                try {
-                    const credsRecord = await SessionModel.findById(`creds_${pairingSessionId}`);
-                    if (credsRecord) {
-                        const credsBuffer = Buffer.from(JSON.stringify(credsRecord.data));
-                        const base64Session = credsBuffer.toString('base64');
-                        const sessionId = `ZORO~${base64Session}`;
-
-                        const userJid = Sock.user.id.split(':')[0] + '@s.whatsapp.net';
-                        await Sock.sendMessage(userJid, {
-                            text: `*✅ YOUR SESSION ID HAS BEEN GENERATED*\n\n\`\`\`${sessionId}\`\`\`\n\n*⚠️ DO NOT SHARE THIS CODE WITH ANYONE!*`
-                        });
-                    }
-                } catch (e) {
-                    console.error("Session Send Error:", e);
-                } finally {
-                    await delay(3000);
-                    try { await Sock.ws.close(); } catch {}
-                }
-            } else if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode === 401) {
-                    await clearSession();
-                }
-            }
-        });
-
-    } catch (error) {
-        if (!res.headersSent) {
-            res.status(500).json({ error: "Internal Server Error" });
-        }
-    }
-});
-
-// ============================================
 // MAIN BOT STARTUP
 // ============================================
 async function startBot() {
-    app.listen(port, () => console.log(`🚀 Server running on Koyeb port ${port}`));
+    const express = require('express');
+    const app = express();
+    const port = process.env.PORT || 8000;
 
-    try {
-        if (process.env.MONGODB_URI) {
-            await mongoose.connect(process.env.MONGODB_URI);
-            console.log("📦 Connected to MongoDB Atlas successfully!");
+    app.use(express.json());
+    app.use(express.urlencoded({ extended: true }));
+
+    // Global variable to store active pairing code or status
+    global.pairingCodeResponse = null;
+
+    // Web UI for Pairing
+    app.get('/', (req, res) => {
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>ZORO MD - Pairing</title>
+                <style>
+                    body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+                    .card { background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 100%; max-width: 400px; text-align: center; }
+                    h2 { color: #38bdf8; margin-bottom: 20px; }
+                    input { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #334155; background: #0f172a; color: #fff; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
+                    button { background: #0284c7; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
+                    button:hover { background: #0369a1; }
+                    #result { margin-top: 20px; font-size: 18px; word-break: break-all; }
+                    .code-box { background: #0f172a; padding: 15px; border-radius: 8px; border: 1px dashed #38bdf8; font-family: monospace; font-size: 22px; color: #4ade80; letter-spacing: 2px; margin-top: 10px; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2>ZORO MD PAIRING</h2>
+                    <form id="pairForm">
+                        <input type="text" id="number" name="number" placeholder="Enter number with 91 (e.g. 918136880986)" required>
+                        <button type="submit">Get Pairing Code</button>
+                    </form>
+                    <div id="result"></div>
+                </div>
+                <script>
+                    document.getElementById('pairForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const num = document.getElementById('number').value;
+                        const resDiv = document.getElementById('result');
+                        resDiv.innerHTML = "Generating code, please wait...";
+                        try {
+                            const response = await fetch('/code?number=' + num);
+                            const data = await response.json();
+                            if(data.code) {
+                                resDiv.innerHTML = \`Your Pairing Code:<div class="code-box">\${data.code}</div>\`;
+                            } else {
+                                resDiv.innerHTML = \`<span style="color:red;">\${data.error || 'Failed to get code'}</span>\`;
+                            }
+                        } catch(err) {
+                            resDiv.innerHTML = '<span style="color:red;">Error connecting to server</span>';
+                        }
+                    });
+                </script>
+            </body>
+            </html>
+        `);
+    });
+
+    // Endpoint to trigger and return pairing code as JSON for the web UI
+    app.get('/code', async (req, res) => {
+        let num = req.query.number;
+        if (!num) return res.json({ error: "Phone number is required" });
+        num = num.replace(/[^0-9]/g, '');
+        
+        global.requestedPhoneNumber = num;
+        if (global.generatePairingCodeFunction) {
+            try {
+                let code = await global.generatePairingCodeFunction(num);
+                res.json({ code: code });
+            } catch (err) {
+                res.json({ error: err.message || "Failed to generate code" });
+            }
         } else {
-            console.log("❌ MONGODB_URI is not set in environment variables!");
+            res.json({ error: "Bot is still initializing, please try again in a few seconds." });
         }
+    });
+
+    app.listen(port, () => console.log(`🚀 Keep-alive server running on port ${port}`));
+
+    console.log('\n╔════════════════════════════════════╗');
+    console.log('║  🚀 ZORO MD BOT STARTING...        ║');
+    console.log('╚════════════════════════════════════╝\n');
+    
+    console.log('📥 CHECKING FOR MODULE UPDATES...');
+    try {
+        await downloadAndExtractModules();
     } catch (err) {
-        console.error("MongoDB Connection Error:", err);
+        console.log('⚠️ Module update check failed, continuing with existing files...');
     }
-
-    try { await downloadAndExtractModules(); } catch (err) {}
+    
     await checkAndInstallFFmpeg();
+    
+    console.log('\n🤖 LOADING BOT MODULES...\n');
 
+    require('./settings');
+    const { Boom } = require('@hapi/boom');
     const chalk = require('chalk');
+    const FileType = require('file-type');
     const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
-    const { jidDecode } = require('./lib/myfunc');
+    const PhoneNumber = require('awesome-phonenumber');
+    const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = require('./lib/exif');
+    const { smsg, isUrl, generateMessageTag, getBuffer, getSizeMedia, fetch, await: awaitFunc, sleep, reSize } = require('./lib/myfunc');
     const {
         default: makeWASocket,
+        useMultiFileAuthState,
         DisconnectReason,
         fetchLatestBaileysVersion,
+        generateForwardMessageContent,
+        prepareWAMessageMedia,
+        generateWAMessageFromContent,
+        generateMessageID,
+        downloadContentFromMessage,
+        jidDecode,
+        proto,
+        jidNormalizedUser,
         makeCacheableSignalKeyStore,
-        Browsers
+        delay
     } = require("@aadhixd777/baileys");
     const NodeCache = require("node-cache");
     const pino = require("pino");
+    const { parsePhoneNumber } = require("libphonenumber-js");
+    const { PHONENUMBER_MCC } = require('@aadhixd777/baileys/lib/Utils/generics');
+    const { rmSync, existsSync } = require('fs');
+    const { join } = require('path');
 
     const store = require('./lib/lightweight_store');
     store.readFromFile();
@@ -365,40 +355,72 @@ async function startBot() {
     const MessageQueue = require('./lib/messageQueue');
     const messageQueue = new MessageQueue();
 
+    setInterval(() => {
+        if (global.gc) {
+            global.gc();
+            console.log('🧹 Garbage collection completed');
+        }
+    }, 60_000);
+
+    setInterval(() => {
+        const used = process.memoryUsage().rss / 1024 / 1024;
+        if (used > 400) {
+            console.log('⚠️ RAM too high (>400MB), restarting bot...');
+            process.exit(1);
+        }
+    }, 30_000);
+
+    let owner = JSON.parse(fs.readFileSync('./data/owner.json'));
+
+    global.botname = "ZORO BOT";
+    global.themeemoji = "•";
+
     async function startXeonBotInc() {
-        let { version } = await fetchLatestBaileysVersion();
-        const mainSessionId = 'main_bot_session';
+        let { version, isLatest } = await fetchLatestBaileysVersion();
+        
+        const sessionDir = './session';
+        if (!fs.existsSync(sessionDir)) {
+            fs.mkdirSync(sessionDir, { recursive: true });
+        }
         
         if (process.env.SESSION_ID) {
             try {
-                let sessionId = process.env.SESSION_ID.replace(/^["']|["']$/g, '');
-                if (sessionId.includes(':~')) sessionId = sessionId.split(':~')[1];
-                if (sessionId.startsWith('ZORO~')) sessionId = sessionId.replace('ZORO~', '');
-                
+                let sessionId = process.env.SESSION_ID;
+                sessionId = sessionId.replace(/^["']|["']$/g, '');
+                if (sessionId.includes(':~')) {
+                    sessionId = sessionId.split(':~')[1];
+                }
                 const sessionData = Buffer.from(sessionId, 'base64').toString('utf-8');
-                const parsedCreds = JSON.parse(sessionData);
-                await SessionModel.findByIdAndUpdate(`creds_${mainSessionId}`, { data: parsedCreds }, { upsert: true });
+                const credsPath = path.join(sessionDir, 'creds.json');
+                fs.writeFileSync(credsPath, sessionData);
+                console.log('✅ Session loaded from .env SESSION_ID');
             } catch (err) {
-                console.error("Session ID Parsing Error:", err);
+                console.log('⚠️ Could not decode SESSION_ID from .env:', err.message);
             }
         }
         
-        const { state, saveCreds, clearSession } = await useMongoDBAuthState(mainSessionId);
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const msgRetryCounterCache = new NodeCache();
 
         const XeonBotInc = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: Browsers.macOS("Chrome"),
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
             },
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
             syncFullHistory: true,
-            msgRetryCounterCache
+            getMessage: async (key) => {
+                let jid = jidNormalizedUser(key.remoteJid);
+                let msg = await store.loadMessage(jid, key.id);
+                return msg?.message || "";
+            },
+            msgRetryCounterCache,
+            defaultQueryTimeoutMs: undefined,
         });
 
         store.bind(XeonBotInc.ev);
@@ -407,13 +429,21 @@ async function startBot() {
         wrapSendMessage(XeonBotInc);
 
         const originalSendMessage = XeonBotInc.sendMessage;
+        const baseSendMessage = originalSendMessage;
+        let hasConnectedOnce = false;
+
         XeonBotInc.sendMessage = async function(jid, content, options = {}) {
             try {
                 return await originalSendMessage.call(this, jid, content, options);
             } catch (error) {
+                console.log(`⚠️ Message send failed, queueing for retry: ${error.message}`);
                 messageQueue.addMessage(jid, content, 1);
                 throw error;
             }
+        };
+
+        XeonBotInc.sendMessageDirect = async function(jid, content, options = {}) {
+            return await baseSendMessage.call(this, jid, content, options);
         };
 
         XeonBotInc.ev.on('messages.upsert', async chatUpdate => {
@@ -425,8 +455,25 @@ async function startBot() {
                     await handleStatus(XeonBotInc, chatUpdate);
                     return;
                 }
-                await handleMessages(XeonBotInc, chatUpdate, true);
-            } catch (err) {}
+                if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return;
+
+                if (XeonBotInc?.msgRetryCounterCache) {
+                    XeonBotInc.msgRetryCounterCache.clear();
+                }
+
+                try {
+                    await handleMessages(XeonBotInc, chatUpdate, true);
+                } catch (err) {
+                    console.error("Error in handleMessages:", err);
+                    if (mek.key && mek.key.remoteJid) {
+                        await XeonBotInc.sendMessage(mek.key.remoteJid, {
+                            text: '❌ An error occurred while processing your message.',
+                        }).catch(console.error);
+                    }
+                }
+            } catch (err) {
+                console.error("Error in messages.upsert:", err);
+            }
         });
 
         XeonBotInc.decodeJid = (jid) => {
@@ -437,41 +484,175 @@ async function startBot() {
             } else return jid;
         };
 
+        XeonBotInc.ev.on('contacts.update', update => {
+            for (let contact of update) {
+                let id = XeonBotInc.decodeJid(contact.id);
+                if (store && store.contacts) store.contacts[id] = { id, name: contact.notify };
+            }
+        });
+
+        XeonBotInc.getName = (jid, withoutContact = false) => {
+            let id = XeonBotInc.decodeJid(jid);
+            withoutContact = XeonBotInc.withoutContact || withoutContact;
+            let v;
+            if (id.endsWith("@g.us")) return new Promise(async (resolve) => {
+                v = store.contacts[id] || {};
+                if (!(v.name || v.subject)) v = XeonBotInc.groupMetadata(id) || {};
+                resolve(v.name || v.subject || PhoneNumber('+' + id.replace('@s.whatsapp.net', '')).getNumber('international'));
+            });
+            else v = id === '0@s.whatsapp.net' ? {
+                id,
+                name: 'WhatsApp'
+            } : id === XeonBotInc.decodeJid(XeonBotInc.user.id) ?
+                XeonBotInc.user :
+                (store.contacts[id] || {});
+            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber('+' + jid.replace('@s.whatsapp.net', '')).getNumber('international');
+        };
+
+        XeonBotInc.public = true;
+        XeonBotInc.serializeM = (m) => smsg(XeonBotInc, m, store);
+
+        // Expose pairing code generation function globally so the Express route can use it
+        global.generatePairingCodeFunction = async (phoneNum) => {
+            if (!XeonBotInc.authState.creds.registered) {
+                phoneNum = phoneNum.replace(/[^0-9]/g, '');
+                const pn = require('awesome-phonenumber');
+                if (!pn('+' + phoneNum).isValid()) {
+                    throw new Error('Invalid phone number.');
+                }
+                let code = await XeonBotInc.requestPairingCode(phoneNum);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                return code;
+            } else {
+                throw new Error('Device is already registered!');
+            }
+        };
+
         XeonBotInc.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection == "open") {
-                console.log(chalk.green(`\n🍁 BOT CONNECTED SUCCESSFULLY AS: ${XeonBotInc.user.id}`));
+                console.log(chalk.magenta(` `));
+                console.log(chalk.yellow(`🍁CONNECTED TO => ` + JSON.stringify(XeonBotInc.user, null, 2)));
+
+                messageQueue.setConnected(true);
+                await messageQueue.processQueue(XeonBotInc);
+
+                const botNumber = XeonBotInc.user.id.split(':')[0] + '@s.whatsapp.net';
+                
+                if (!hasConnectedOnce) {
+                    hasConnectedOnce = true;
+                    await XeonBotInc.sendMessageDirect(botNumber, {
+                        text: `
+┏❐═⭔ *ZORO CONNECTED SUCCESSFULLY* ⭔═❐
+┃⭔ *Bot:* ZORO MD 
+┃⭔ *Time:* ${new Date().toLocaleString()}
+┃⭔ *Status:* Active
+┃⭔ *User:* ${botNumber}
+┗❐═⭔════════⭔═❐
+
+ᴘʟᴇᴀsᴇ ᴊᴏɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ ʙᴇʟᴏᴡ
+https://chat.whatsapp.com/KgrsEhNGRjv5cXfftpLxN2?s=cl&p=a&ilr=1`,
+                    }).catch(err => console.log('⚠️ Could not send connection message:', err.message));
+                }
+
+                setInterval(() => messageQueue.processQueue(XeonBotInc), 10000);
+
+                await delay(1999);
+                
+                console.log(chalk.yellow(`\n\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮`));
+                console.log(chalk.bold.blue(`│     🔥 ZORO MD BOT 🔥            │`));
+                console.log(chalk.yellow(`╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n`));
+                
+                console.log(chalk.cyan(`╔════════════════════════════════════╗`));
+                console.log(chalk.green(`║  ✅ CONNECTION SUCCESSFUL! ✅     ║`));
+                console.log(chalk.cyan(`╠════════════════════════════════════╣`));
+                console.log(chalk.magenta(`║ 👤 Owner: Aadhixd                     ║`));
+                console.log(chalk.magenta(`║ 📱 Number: ${owner}               ║`));
+                console.log(chalk.magenta(`║ 💎 Version: ${settings.version || '3.0.0'}                    ║`));
+                console.log(chalk.magenta(`║ ⏰ Time: ${new Date().toLocaleString()}  ║`));
+                console.log(chalk.magenta(`║ 🔥 Status: ON FIRE!                ║`));
+                console.log(chalk.cyan(`╚════════════════════════════════════╝\n`));
+                
+                console.log(chalk.green(`${global.themeemoji || '•'} 🍁 Zoro is on fire 🔥`));
+                console.log(chalk.blue(`${global.themeemoji || '•'} All systems operational!`));
             }
             if (connection === 'close') {
+                messageQueue.setConnected(false);
+                console.log(chalk.yellow('⚠️️ Connection lost - messages will be queued for retry'));
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    try { await clearSession(); } catch { }
+                    try {
+                        rmSync('./session', { recursive: true, force: true });
+                    } catch { }
+                    console.log(chalk.red('Session logged out. Please re-authenticate.'));
                     startXeonBotInc();
                 } else {
+                    console.log(chalk.yellow('Reconnecting...'));
                     startXeonBotInc();
                 }
             }
         });
 
-        XeonBotInc.ev.on('creds.update', saveCreds);
-
         const { handleCall } = require('./plugins/anticall-improved');
         XeonBotInc.ev.on('call', async (calls) => {
-            for (const call of calls) {
-                await handleCall(XeonBotInc, { from: call.from || call.peerJid, id: call.id, status: call.status || 'offer' });
+            try {
+                for (const call of calls) {
+                    const callData = {
+                        from: call.from || call.peerJid || call.chatId,
+                        id: call.id,
+                        status: call.status || 'offer'
+                    };
+                    await handleCall(XeonBotInc, callData);
+                }
+            } catch (e) {
+                console.error('Error handling call:', e);
             }
         });
+
+        XeonBotInc.ev.on('creds.update', saveCreds);
 
         XeonBotInc.ev.on('group-participants.update', async (update) => {
             await handleGroupParticipantUpdate(XeonBotInc, update);
         });
 
+        XeonBotInc.ev.on('messages.upsert', async (m) => {
+            if (m.messages[0].key && m.messages[0].key.remoteJid === 'status@broadcast') {
+                await handleStatus(XeonBotInc, m);
+            }
+        });
+
+        XeonBotInc.ev.on('status.update', async (status) => {
+            await handleStatus(XeonBotInc, status);
+        });
+
+        XeonBotInc.ev.on('messages.reaction', async (status) => {
+            await handleStatus(XeonBotInc, status);
+        });
+
         return XeonBotInc;
     }
 
+    console.log(chalk.green('\n🤖 STARTING WHATSAPP CONNECTION...\n'));
     await startXeonBotInc();
 }
 
 startBot().catch(error => {
+    console.error('Fatal error:', error);
     process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled Rejection:', err);
+});
+
+let file = require.resolve(__filename);
+fs.watchFile(file, () => {
+    fs.unwatchFile(file);
+    console.log(`Update ${__filename}`);
+    delete require.cache[file];
+    require(file);
 });
