@@ -201,7 +201,7 @@ async function startBot() {
                         const codeDiv = document.getElementById('code');
                         const btn = document.getElementById('submitBtn');
                         
-                        codeDiv.innerHTML = "⏳ Generating Pairing Code... Please wait.";
+                        codeDiv.innerHTML = "⏳ Connecting to WhatsApp... Please wait (~10s).";
                         btn.disabled = true;
                         
                         try {
@@ -224,28 +224,32 @@ async function startBot() {
         `);
     });
 
-    // Multi-Session Pairing Code Route
+    // Highly Safe & Fixed Multi-Session Pairing Route
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
         phoneNum = phoneNum.replace(/[^0-9]/g, '');
 
         try {
-            const { delay } = require("@aadhixd777/baileys");
             let sock = await startClientSession(phoneNum);
             
-            let attempts = 0;
-            while (!sock.authState.creds.registered && attempts < 15) {
-                if (sock.ws && sock.ws.readyState === 1) {
-                    break;
-                }
-                await delay(1000);
-                attempts++;
+            // Wait until the socket ws is fully open to prevent Error 428
+            let maxWait = 15; // 15 seconds max wait
+            while (sock.ws.readyState !== 1 && maxWait > 0) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                maxWait--;
+            }
+
+            if (sock.ws.readyState !== 1) {
+                return res.json({ error: "Connection timeout. Please try again." });
             }
 
             if (sock.authState && sock.authState.creds && sock.authState.creds.registered) {
                 return res.json({ code: "Already Registered & Connected!" });
             }
+
+            // Small delay to stabilize socket before requesting code
+            await new Promise(resolve => setTimeout(resolve, 2000));
 
             let code = await sock.requestPairingCode(phoneNum);
             code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -264,9 +268,7 @@ async function startBot() {
         useMultiFileAuthState, 
         DisconnectReason, 
         fetchLatestBaileysVersion, 
-        jidNormalizedUser, 
-        makeCacheableSignalKeyStore, 
-        delay 
+        makeCacheableSignalKeyStore 
     } = require("@aadhixd777/baileys");
     const NodeCache = require("node-cache");
     const pino = require("pino");
@@ -277,7 +279,11 @@ async function startBot() {
     // Function to initialize individual user session dynamically
     async function startClientSession(sessionIdName) {
         if (activeSessions.has(sessionIdName)) {
-            return activeSessions.get(sessionIdName);
+            const existingSock = activeSessions.get(sessionIdName);
+            if (existingSock.ws && existingSock.ws.readyState === 1) {
+                return existingSock;
+            }
+            activeSessions.delete(sessionIdName);
         }
 
         let { version } = await fetchLatestBaileysVersion();
@@ -293,7 +299,7 @@ async function startBot() {
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
@@ -325,7 +331,7 @@ async function startBot() {
         clientSock.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection === "open") {
-                console.log(`✅ Session connected instantly for: ${sessionIdName}`);
+                console.log(`✅ Session connected successfully for: ${sessionIdName}`);
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
