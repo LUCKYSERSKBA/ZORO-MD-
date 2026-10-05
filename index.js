@@ -6,50 +6,33 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-// Express App Initialization
 const app = express();
 const port = process.env.PORT || 8000;
 app.use(cors());
 app.use(express.json());
 
-// Main Web Status Route
-app.get('/', (req, res) => res.json({ status: true, message: "Zoro-MD Bot & Multi-Session Pairing Engine Active!" }));
+app.get('/', (req, res) => res.json({ status: true, message: "Zoro-MD Multi-Session Engine Active!" }));
 
 // ============================================
-// MODULE UPDATER - RUNS ONLY ON FIRST START
+// MODULE UPDATER
 // ============================================
 async function downloadAndExtractModules() {
     const settingsPath = path.join(__dirname, 'settings.js');
     const modulesInstalledFlag = path.join(__dirname, '.modules_installed');
     
-    if (fs.existsSync(modulesInstalledFlag)) {
-        console.log('✅ Modules already installed, skipping download');
-        return true;
-    }
-    
-    if (!fs.existsSync(settingsPath)) {
-        console.log('⚠️ settings.js not found, skipping module update');
-        return false;
-    }
+    if (fs.existsSync(modulesInstalledFlag)) return true;
+    if (!fs.existsSync(settingsPath)) return false;
     
     const settings = require('./settings');
     const zipUrl = settings.updateZipUrl;
-    
-    if (!zipUrl) {
-        console.log('⚠️ No updateZipUrl configured in settings.js');
-        return false;
-    }
+    if (!zipUrl) return false;
 
     const TEMP_DIR = path.join(__dirname, 'temp_update');
     const ZIP_FILE = path.join(TEMP_DIR, 'modules.zip');
     const EXTRACT_DIR = path.join(TEMP_DIR, 'extracted');
 
-    console.log('📥 DOWNLOADING MODULES FROM REPOSITORY...');
-
     try {
-        if (!fs.existsSync(TEMP_DIR)) {
-            fs.mkdirSync(TEMP_DIR, { recursive: true });
-        }
+        if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
         const response = await axios({
             method: 'get',
@@ -60,23 +43,17 @@ async function downloadAndExtractModules() {
         });
 
         fs.writeFileSync(ZIP_FILE, response.data);
-        console.log('✅ DOWNLOAD COMPLETE!');
-
-        if (fs.existsSync(EXTRACT_DIR)) {
-            fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
-        }
+        if (fs.existsSync(EXTRACT_DIR)) fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
         fs.mkdirSync(EXTRACT_DIR, { recursive: true });
 
         execSync(`unzip -o "${ZIP_FILE}" -d "${EXTRACT_DIR}"`, { stdio: 'pipe' });
 
         const extractedFolders = fs.readdirSync(EXTRACT_DIR);
         const moduleFolder = extractedFolders.find(f => f.includes('ZORO-MD-MODULES') || f.includes('MODULES'));
-        
         if (!moduleFolder) return false;
 
         const sourcePath = path.join(EXTRACT_DIR, moduleFolder);
         const basePath = __dirname;
-
         const foldersToSync = ['lib', 'plugins', 'data', 'media'];
         const filesToSync = ['main.js', 'config.js'];
 
@@ -97,32 +74,25 @@ async function downloadAndExtractModules() {
 
         fs.rmSync(TEMP_DIR, { recursive: true, force: true });
         fs.writeFileSync(modulesInstalledFlag, new Date().toISOString());
-        console.log('🎉 MODULES UPDATED SUCCESSFULLY!');
         return true;
-
     } catch (error) {
-        console.error('❌ Error updating modules:', error.message);
         if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true, force: true });
         return false;
     }
 }
 
 // ============================================
-// FFMPEG CHECK AND AUTO-INSTALL
+// FFMPEG CHECK
 // ============================================
 async function checkAndInstallFFmpeg() {
-    console.log('🎬 CHECKING FFMPEG INSTALLATION...');
     const ffmpegDir = path.join(__dirname, 'ffmpeg_bin');
     const ffmpegPath = path.join(ffmpegDir, 'ffmpeg');
     const ffprobePath = path.join(ffmpegDir, 'ffprobe');
     
     try {
-        const result = execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
-        console.log(`✅ FFMPEG FOUND IN SYSTEM`);
+        execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
         return true;
-    } catch (error) {
-        console.log('⚠️ FFmpeg not found in system PATH');
-    }
+    } catch (error) {}
     
     if (fs.existsSync(ffmpegPath)) {
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
@@ -158,13 +128,12 @@ async function checkAndInstallFFmpeg() {
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
         return true;
     } catch (error) {
-        console.error('❌ Failed to download FFmpeg:', error.message);
         return false;
     }
 }
 
 // ============================================
-// WEB PAIRING ROUTE (FAST PAIRING + 1 MINUTE TIMEOUT)
+// STABLE MULTI-SESSION PAIRING ROUTE
 // ============================================
 function getSessionPath() {
     return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
@@ -175,42 +144,48 @@ function removeSessionFolder(folderPath) {
         if (fs.existsSync(folderPath)) {
             fs.rmSync(folderPath, { recursive: true, force: true });
         }
-    } catch (err) {
-        console.error('Error deleting session folder:', err.message);
-    }
+    } catch (err) {}
 }
 
 app.get('/code', async (req, res) => {
     let num = req.query.number;
 
     if (!num) {
-        return res.status(400).json({ error: "Please provide a valid phone number. Example: ?number=919876543210" });
+        return res.status(400).json({ error: "Please provide a valid phone number." });
     }
 
     num = num.replace(/[^0-9]/g, '');
     const sessionDir = getSessionPath();
 
-    const { makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore, Browsers } = require("@aadhixd777/baileys");
+    const { 
+        makeWASocket, 
+        useMultiFileAuthState, 
+        delay, 
+        makeCacheableSignalKeyStore, 
+        Browsers, 
+        fetchLatestBaileysVersion 
+    } = require("@aadhixd777/baileys");
     const pino = require('pino');
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        const { version } = await fetchLatestBaileysVersion();
 
         const Sock = makeWASocket({
+            version,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
             printQRInTerminal: false,
             logger: pino({ level: "fatal" }),
-            browser: Browsers.ubuntu("Chrome"),
+            browser: Browsers.macOS("Chrome"),
             syncFullHistory: false,
             markOnlineOnConnect: false
         });
 
         Sock.ev.on('creds.update', saveCreds);
 
-        // പെട്ടെന്ന് പെയറിങ് കോഡ് ജനറേറ്റ് ചെയ്യുന്നു
         await delay(1500);
         if (!Sock.authState.creds.registered) {
             try {
@@ -220,7 +195,6 @@ app.get('/code', async (req, res) => {
                     res.json({ code: code, status: true });
                 }
             } catch (err) {
-                console.error("Error requesting pairing code:", err);
                 removeSessionFolder(sessionDir);
                 if (!res.headersSent) {
                     return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
@@ -232,8 +206,8 @@ app.get('/code', async (req, res) => {
             const { connection, lastDisconnect } = update;
 
             if (connection === 'open') {
-                // വാട്ട്‌സ്ആപ്പിൽ പൂർണ്ണമായി കണക്‌റ്റ് ആയി പ്രോസസ്സിംഗ് തീരാൻ 1 മിനിറ്റ് (60000ms) സമയം നൽകുന്നു
-                await delay(60000);
+                // ലോഗിൻ പൂർത്തിയാക്കാൻ 5 സെക്കൻഡ് സാവകാശം കൊടുക്കുന്നു
+                await delay(5000);
                 try {
                     const credsPath = path.join(sessionDir, 'creds.json');
                     if (fs.existsSync(credsPath)) {
@@ -250,7 +224,7 @@ app.get('/code', async (req, res) => {
                 } catch (e) {
                     console.error("Session Send Error:", e);
                 } finally {
-                    await delay(3000);
+                    await delay(2000);
                     try { await Sock.ws.close(); } catch {}
                     removeSessionFolder(sessionDir);
                 }
@@ -263,7 +237,6 @@ app.get('/code', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Server Error:", error);
         removeSessionFolder(sessionDir);
         if (!res.headersSent) {
             res.status(500).json({ error: "Internal Server Error" });
@@ -275,19 +248,14 @@ app.get('/code', async (req, res) => {
 // MAIN BOT STARTUP
 // ============================================
 async function startBot() {
-    app.listen(port, () => console.log(`🚀 Server and Pairing API running on port ${port}`));
+    app.listen(port, () => console.log(`🚀 Server running on Koyeb port ${port}`));
 
-    console.log('\n╔════════════════════════════════════╗');
-    console.log('║  🚀 ZORO MD BOT STARTING...        ║');
-    console.log('╚════════════════════════════════════╝\n');
-    
     try { await downloadAndExtractModules(); } catch (err) {}
     await checkAndInstallFFmpeg();
 
     const chalk = require('chalk');
     const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
-    const PhoneNumber = require('awesome-phonenumber');
-    const { smsg, jidDecode } = require('./lib/myfunc');
+    const { jidDecode } = require('./lib/myfunc');
     const {
         default: makeWASocket,
         useMultiFileAuthState,
@@ -307,8 +275,6 @@ async function startBot() {
     const MessageQueue = require('./lib/messageQueue');
     const messageQueue = new MessageQueue();
 
-    let owner = JSON.parse(fs.readFileSync('./data/owner.json'));
-
     async function startXeonBotInc() {
         let { version } = await fetchLatestBaileysVersion();
         const sessionDir = './session';
@@ -320,10 +286,7 @@ async function startBot() {
                 if (sessionId.includes(':~')) sessionId = sessionId.split(':~')[1];
                 const sessionData = Buffer.from(sessionId, 'base64').toString('utf-8');
                 fs.writeFileSync(path.join(sessionDir, 'creds.json'), sessionData);
-                console.log('✅ Session loaded from .env SESSION_ID');
-            } catch (err) {
-                console.log('⚠️ Could not decode SESSION_ID:', err.message);
-            }
+            } catch (err) {}
         }
         
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -369,9 +332,7 @@ async function startBot() {
                     return;
                 }
                 await handleMessages(XeonBotInc, chatUpdate, true);
-            } catch (err) {
-                console.error("Error in messages.upsert:", err);
-            }
+            } catch (err) {}
         });
 
         XeonBotInc.decodeJid = (jid) => {
@@ -418,6 +379,5 @@ async function startBot() {
 }
 
 startBot().catch(error => {
-    console.error('Fatal error:', error);
     process.exit(1);
 });
