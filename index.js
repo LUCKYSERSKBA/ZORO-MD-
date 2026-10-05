@@ -17,7 +17,7 @@ async function downloadAndExtractModules() {
     }
     
     if (!fs.existsSync(settingsPath)) {
-        console.log('⚠️️ settings.js not found, skipping module update');
+        console.log('⚠️ settings.js not found, skipping module update');
         return false;
     }
     
@@ -144,7 +144,7 @@ async function checkAndInstallFFmpeg() {
             console.log('✅ ADDED FFMPEG TO PATH');
             return true;
         } catch (error) {
-            console.log('⚠️️ Local FFmpeg exists but not working, will re-download');
+            console.log('⚠️ Local FFmpeg exists but not working, will re-download');
         }
     }
     
@@ -277,16 +277,19 @@ async function startBot() {
 
         phoneNum = phoneNum.replace(/[^0-9]/g, '');
 
-        if (!XeonBotInc) {
-            return res.json({ error: "WhatsApp Socket is not initialized yet. Please try again in a few seconds." });
-        }
-
-        if (XeonBotInc.authState && XeonBotInc.authState.creds && XeonBotInc.authState.creds.registered) {
-            return res.json({ code: "Already Registered & Connected!" });
-        }
-
         try {
             const { delay } = require("@aadhixd777/baileys");
+            
+            // Re-initialize if socket doesn't exist
+            if (!XeonBotInc) {
+                await startXeonBotInc();
+                await delay(3000);
+            }
+
+            if (XeonBotInc.authState && XeonBotInc.authState.creds && XeonBotInc.authState.creds.registered) {
+                return res.json({ code: "Already Registered & Connected!" });
+            }
+
             await delay(1500);
             let code = await XeonBotInc.requestPairingCode(phoneNum);
             code = code?.match(/.{1,4}/g)?.join("-") || code;
@@ -410,13 +413,14 @@ async function startBot() {
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
             syncFullHistory: true,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: undefined,
             getMessage: async (key) => {
                 let jid = jidNormalizedUser(key.remoteJid);
                 let msg = await store.loadMessage(jid, key.id);
                 return msg?.message || "";
             },
             msgRetryCounterCache,
-            defaultQueryTimeoutMs: undefined,
         });
 
         store.bind(XeonBotInc.ev);
@@ -558,17 +562,17 @@ https://chat.whatsapp.com/KgrsEhNGRjv5cXfftpLxN2?s=cl&p=a&ilr=1`,
             }
             if (connection === 'close') {
                 messageQueue.setConnected(false);
-                console.log(chalk.yellow('⚠️ Connection lost - messages will be queued for retry'));
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
+                
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                    console.log(chalk.red('❌ Session logged out or corrupted. Cleaning session...'));
                     try {
                         rmSync('./session', { recursive: true, force: true });
                     } catch { }
-                    console.log(chalk.red('Session logged out. Please re-authenticate.'));
-                    startXeonBotInc();
+                    process.exit(1);
                 } else {
-                    console.log(chalk.yellow('Reconnecting...'));
-                    startXeonBotInc();
+                    console.log(chalk.yellow('⚠️ Connection lost - reconnecting in 3 seconds...'));
+                    setTimeout(() => startXeonBotInc(), 3000);
                 }
             }
         });
