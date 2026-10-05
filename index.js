@@ -4,6 +4,7 @@ const axios = require('axios');
 const { execSync } = require('child_process');
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 const app = express();
@@ -12,6 +13,98 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/', (req, res) => res.json({ status: true, message: "Zoro-MD Multi-Session Engine Active!" }));
+
+// ============================================
+// MONGODB MONGOOSE AUTH STATE FOR BAILEYS
+// ============================================
+const SessionSchema = new mongoose.Schema({
+    _id: { type: String, required: true },
+    data: { type: Object, required: true }
+});
+const SessionModel = mongoose.models.ZoroSession || mongoose.model('ZoroSession', SessionSchema);
+
+async function useMongoDBAuthState(sessionId) {
+    if (mongoose.connection.readyState === 0) {
+        await mongoose.connect(process.env.MONGODB_URI, {
+            serverSelectionTimeoutMS: 30000,
+            socketTimeoutMS: 45000,
+        });
+    }
+
+    const writeData = async (data, id) => {
+        const documents = JSON.parse(JSON.stringify(data, (_, v) => typeof v === 'bigint' ? v.toString() : v));
+        await SessionModel.findByIdAndUpdate(id, { data: documents }, { upsert: true, setDefaultsOnInsert: true });
+    };
+
+    const readData = async (id) => {
+        try {
+            const doc = await SessionModel.findById(id);
+            if (!doc) return null;
+            return JSON.parse(JSON.stringify(doc.data), (_, v) => {
+                if (typeof v === 'string' && /^\d+n$/.test(v)) return BigInt(v.slice(0, -1));
+                return v;
+            });
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const removeData = async (id) => {
+        try {
+            await SessionModel.findByIdAndDelete(id);
+        } catch (error) {}
+    };
+
+    const credsId = `creds_${sessionId}`;
+    let creds = await readData(credsId);
+    
+    const { initAuthCreds } = require("@aadhixd777/baileys");
+    if (!creds) {
+        creds = initAuthCreds();
+        await writeData(creds, credsId);
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    for (const id of ids) {
+                        const key = `${type}_${sessionId}_${id}`;
+                        let value = await readData(key);
+                        if (type === 'app-state-sync-key' && value) {
+                            value = require('@aadhixd777/baileys').proto.Message.AppStateSyncKeyData.fromObject(value);
+                        }
+                        data[id] = value;
+                    }
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category of Object.keys(data)) {
+                        for (const id of Object.keys(data[category])) {
+                            const value = data[category][id];
+                            const key = `${category}_${sessionId}_${id}`;
+                            if (value) {
+                                tasks.push(writeData(value, key));
+                            } else {
+                                tasks.push(removeData(key));
+                            }
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: async () => {
+            return await writeData(creds, credsId);
+        },
+        clearSession: async () => {
+            await removeData(credsId);
+        }
+    };
+}
 
 // ============================================
 // MODULE UPDATER
@@ -133,20 +226,8 @@ async function checkAndInstallFFmpeg() {
 }
 
 // ============================================
-// STABLE MULTI-SESSION PAIRING ROUTE
+// STABLE MONGODB PAIRING ROUTE
 // ============================================
-function getSessionPath() {
-    return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
-}
-
-function removeSessionFolder(folderPath) {
-    try {
-        if (fs.existsSync(folderPath)) {
-            fs.rmSync(folderPath, { recursive: true, force: true });
-        }
-    } catch (err) {}
-}
-
 app.get('/code', async (req, res) => {
     let num = req.query.number;
 
@@ -155,11 +236,10 @@ app.get('/code', async (req, res) => {
     }
 
     num = num.replace(/[^0-9]/g, '');
-    const sessionDir = getSessionPath();
+    const tempSessionId = `pairing_${Date.now()}`;
 
     const { 
         makeWASocket, 
-        useMultiFileAuthState, 
         delay, 
         makeCacheableSignalKeyStore, 
         Browsers, 
@@ -168,7 +248,11 @@ app.get('/code', async (req, res) => {
     const pino = require('pino');
 
     try {
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        if (mongoose.connection.readyState === 0 && process.env.MONGODB_URI) {
+            await mongoose.connect(process.env.MONGODB_URI);
+        }
+
+        const { state, saveCreds, clearSession } = await useMongoDBAuthState(tempSessionId);
         const { version } = await fetchLatestBaileysVersion();
 
         const Sock = makeWASocket({
@@ -195,7 +279,7 @@ app.get('/code', async (req, res) => {
                     res.json({ code: code, status: true });
                 }
             } catch (err) {
-                removeSessionFolder(sessionDir);
+                await clearSession();
                 if (!res.headersSent) {
                     return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
                 }
@@ -206,17 +290,15 @@ app.get('/code', async (req, res) => {
             const { connection, lastDisconnect } = update;
 
             if (connection === 'open') {
-                // ലോഗിൻ പൂർത്തിയാക്കാൻ 5 സെക്കൻഡ് സാവകാശം കൊടുക്കുന്നു
                 await delay(5000);
                 try {
-                    const credsPath = path.join(sessionDir, 'creds.json');
-                    if (fs.existsSync(credsPath)) {
-                        const credsData = fs.readFileSync(credsPath);
-                        const base64Session = Buffer.from(credsData).toString('base64');
+                    const credsRecord = await SessionModel.findById(`creds_${tempSessionId}`);
+                    if (credsRecord) {
+                        const credsBuffer = Buffer.from(JSON.stringify(credsRecord.data));
+                        const base64Session = credsBuffer.toString('base64');
                         const sessionId = `ZORO~${base64Session}`;
 
                         const userJid = Sock.user.id.split(':')[0] + '@s.whatsapp.net';
-                        
                         await Sock.sendMessage(userJid, {
                             text: `*✅ YOUR SESSION ID HAS BEEN GENERATED*\n\n\`\`\`${sessionId}\`\`\`\n\n*⚠️ DO NOT SHARE THIS CODE WITH ANYONE!*`
                         });
@@ -226,18 +308,17 @@ app.get('/code', async (req, res) => {
                 } finally {
                     await delay(2000);
                     try { await Sock.ws.close(); } catch {}
-                    removeSessionFolder(sessionDir);
+                    await clearSession();
                 }
             } else if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 if (statusCode === 401 || statusCode === 500) {
-                    removeSessionFolder(sessionDir);
+                    await clearSession();
                 }
             }
         });
 
     } catch (error) {
-        removeSessionFolder(sessionDir);
         if (!res.headersSent) {
             res.status(500).json({ error: "Internal Server Error" });
         }
@@ -250,6 +331,17 @@ app.get('/code', async (req, res) => {
 async function startBot() {
     app.listen(port, () => console.log(`🚀 Server running on Koyeb port ${port}`));
 
+    try {
+        if (process.env.MONGODB_URI) {
+            await mongoose.connect(process.env.MONGODB_URI);
+            console.log("📦 Connected to MongoDB Atlas successfully!");
+        } else {
+            console.log("❌ MONGODB_URI is not set in environment variables!");
+        }
+    } catch (err) {
+        console.error("MongoDB Connection Error:", err);
+    }
+
     try { await downloadAndExtractModules(); } catch (err) {}
     await checkAndInstallFFmpeg();
 
@@ -258,7 +350,6 @@ async function startBot() {
     const { jidDecode } = require('./lib/myfunc');
     const {
         default: makeWASocket,
-        useMultiFileAuthState,
         DisconnectReason,
         fetchLatestBaileysVersion,
         makeCacheableSignalKeyStore,
@@ -277,19 +368,23 @@ async function startBot() {
 
     async function startXeonBotInc() {
         let { version } = await fetchLatestBaileysVersion();
-        const sessionDir = './session';
-        if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+        const mainSessionId = 'main_bot_session';
         
         if (process.env.SESSION_ID) {
             try {
                 let sessionId = process.env.SESSION_ID.replace(/^["']|["']$/g, '');
                 if (sessionId.includes(':~')) sessionId = sessionId.split(':~')[1];
+                if (sessionId.startsWith('ZORO~')) sessionId = sessionId.replace('ZORO~', '');
+                
                 const sessionData = Buffer.from(sessionId, 'base64').toString('utf-8');
-                fs.writeFileSync(path.join(sessionDir, 'creds.json'), sessionData);
-            } catch (err) {}
+                const parsedCreds = JSON.parse(sessionData);
+                await SessionModel.findByIdAndUpdate(`creds_${mainSessionId}`, { data: parsedCreds }, { upsert: true });
+            } catch (err) {
+                console.error("Session ID Parsing Error:", err);
+            }
         }
         
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        const { state, saveCreds, clearSession } = await useMongoDBAuthState(mainSessionId);
         const msgRetryCounterCache = new NodeCache();
 
         const XeonBotInc = makeWASocket({
@@ -351,7 +446,7 @@ async function startBot() {
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    try { fs.rmSync('./session', { recursive: true, force: true }); } catch { }
+                    try { await clearSession(); } catch { }
                     startXeonBotInc();
                 } else {
                     startXeonBotInc();
