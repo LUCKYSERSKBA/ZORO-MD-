@@ -198,14 +198,14 @@ async function startBot() {
                         const codeDiv = document.getElementById('code');
                         const btn = document.getElementById('submitBtn');
                         
-                        codeDiv.innerHTML = "⏳ Connecting & Generating Code... Please wait.";
+                        codeDiv.innerHTML = "⏳ Generating Pairing Code... Please wait.";
                         btn.disabled = true;
                         
                         try {
                             const res = await fetch('/code?phone=' + phone);
                             const data = await res.json();
                             if (data.code) {
-                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#94a3b8;'>Enter this in WhatsApp. It will connect instantly once linked!</small>";
+                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Type this code in WhatsApp now. It will connect instantly!</small>";
                             } else {
                                 codeDiv.innerHTML = "<span style='color:#ef4444;'>Error: " + (data.error || "Failed") + "</span>";
                             }
@@ -221,7 +221,7 @@ async function startBot() {
         `);
     });
 
-    // Multi-Session Pairing Code Route (Optimized for instant socket response)
+    // Highly Optimized Multi-Session Pairing Route
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
@@ -231,14 +231,13 @@ async function startBot() {
             const { delay } = require("@aadhixd777/baileys");
             let sock = await startClientSession(phoneNum);
             
-            // Wait briefly for socket readiness
+            // Wait for socket to establish connection rapidly (max 10 seconds)
             let attempts = 0;
-            while (!sock.authState.creds.registered && attempts < 15) {
-                if (!sock.ws || sock.ws.readyState !== 1) {
-                    await delay(1000);
-                } else {
+            while (!sock.authState.creds.registered && attempts < 10) {
+                if (sock.ws && sock.ws.readyState === 1) {
                     break;
                 }
+                await delay(1000);
                 attempts++;
             }
 
@@ -275,7 +274,7 @@ async function startBot() {
     global.botname = "ZORO BOT";
     global.themeemoji = "•";
 
-    // Function to initialize individual user session dynamically with instant reconnection
+    // Dynamic session starter with instant connection handlers
     async function startClientSession(sessionIdName) {
         if (activeSessions.has(sessionIdName)) {
             return activeSessions.get(sessionIdName);
@@ -302,7 +301,9 @@ async function startBot() {
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
             syncFullHistory: false,
-            connectTimeoutMs: 60000,
+            connectTimeoutMs: 30000,
+            defaultQueryTimeoutMs: 30000,
+            keepAliveIntervalMs: 15000,
             msgRetryCounterCache,
         });
 
@@ -324,7 +325,7 @@ async function startBot() {
         clientSock.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection === "open") {
-                console.log(`✅ Session connected instantly for: ${sessionIdName}`);
+                console.log(`✅ WhatsApp Connected Instantly for: ${sessionIdName}`);
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -334,7 +335,7 @@ async function startBot() {
                     } catch {}
                     activeSessions.delete(sessionIdName);
                 } else {
-                    setTimeout(() => startClientSession(sessionIdName), 3000);
+                    setTimeout(() => startClientSession(sessionIdName), 2000);
                 }
             }
         });
@@ -347,7 +348,7 @@ async function startBot() {
         return clientSock;
     }
 
-    // Auto-load existing sessions from folder if any exist
+    // Auto-restore existing sessions on startup
     if (fs.existsSync('./sessions')) {
         const existingFolders = fs.readdirSync('./sessions');
         for (const folder of existingFolders) {
@@ -365,7 +366,7 @@ startBot().catch(error => {
     process.exit(1);
 });
 
-// Memory Guard: Clean up or restart if RAM gets too high to prevent free tier crashes
+// Memory Guard
 setInterval(() => {
     const used = process.memoryUsage().rss / 1024 / 1024;
     if (used > 450) {
