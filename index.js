@@ -25,7 +25,7 @@ async function downloadAndExtractModules() {
     const zipUrl = settings.updateZipUrl;
     
     if (!zipUrl) {
-        console.log('⚠️️ No updateZipUrl configured in settings.js');
+        console.log('⚠ No updateZipUrl configured in settings.js');
         return false;
     }
 
@@ -177,7 +177,7 @@ async function startBot() {
                     input { width: 80%; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 16px; }
                     button { background: #22c55e; color: white; border: none; padding: 12px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; width: 85%; font-weight: bold; }
                     button:hover { background: #16a34a; }
-                    #code { margin-top: 20px; font-size: 22px; font-weight: bold; color: #4ade80; word-break: break-all; }
+                    #code { margin-top: 20px; font-size: 20px; font-weight: bold; color: #4ade80; word-break: break-all; }
                 </style>
             </head>
             <body>
@@ -187,26 +187,32 @@ async function startBot() {
                     <form id="pairForm">
                         <input type="text" id="phone" placeholder="919876543210" required>
                         <br>
-                        <button type="submit">Get Pairing Code</button>
+                        <button type="submit" id="submitBtn">Get Pairing Code</button>
                     </form>
                     <div id="code"></div>
                 </div>
                 <script>
                     document.getElementById('pairForm').addEventListener('submit', async (e) => {
                         e.preventDefault();
-                        const phone = document.getElementById('phone').value;
+                        const phone = document.getElementById('phone').value.trim();
                         const codeDiv = document.getElementById('code');
-                        codeDiv.innerText = "Generating Code...";
+                        const btn = document.getElementById('submitBtn');
+                        
+                        codeDiv.innerHTML = "⏳ Connecting & Generating Code... Please wait.";
+                        btn.disabled = true;
+                        
                         try {
                             const res = await fetch('/code?phone=' + phone);
                             const data = await res.json();
                             if (data.code) {
-                                codeDiv.innerText = "Code: " + data.code;
+                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#94a3b8;'>Enter this in WhatsApp. It will connect instantly once linked!</small>";
                             } else {
-                                codeDiv.innerText = "Error: " + (data.error || "Failed");
+                                codeDiv.innerHTML = "<span style='color:#ef4444;'>Error: " + (data.error || "Failed") + "</span>";
                             }
                         } catch (err) {
-                            codeDiv.innerText = "Something went wrong!";
+                            codeDiv.innerHTML = "<span style='color:#ef4444;'>Something went wrong! Try again.</span>";
+                        } finally {
+                            btn.disabled = false;
                         }
                     });
                 </script>
@@ -215,7 +221,7 @@ async function startBot() {
         `);
     });
 
-    // Multi-Session Pairing Code Route
+    // Multi-Session Pairing Code Route (Optimized for instant socket response)
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
@@ -224,7 +230,17 @@ async function startBot() {
         try {
             const { delay } = require("@aadhixd777/baileys");
             let sock = await startClientSession(phoneNum);
-            await delay(3000);
+            
+            // Wait briefly for socket readiness
+            let attempts = 0;
+            while (!sock.authState.creds.registered && attempts < 15) {
+                if (!sock.ws || sock.ws.readyState !== 1) {
+                    await delay(1000);
+                } else {
+                    break;
+                }
+                attempts++;
+            }
 
             if (sock.authState && sock.authState.creds && sock.authState.creds.registered) {
                 return res.json({ code: "Already Registered & Connected!" });
@@ -250,7 +266,6 @@ async function startBot() {
         useMultiFileAuthState, 
         DisconnectReason, 
         fetchLatestBaileysVersion, 
-        jidNormalizedUser, 
         makeCacheableSignalKeyStore, 
         delay 
     } = require("@aadhixd777/baileys");
@@ -260,7 +275,7 @@ async function startBot() {
     global.botname = "ZORO BOT";
     global.themeemoji = "•";
 
-    // Function to initialize individual user session dynamically
+    // Function to initialize individual user session dynamically with instant reconnection
     async function startClientSession(sessionIdName) {
         if (activeSessions.has(sessionIdName)) {
             return activeSessions.get(sessionIdName);
@@ -279,7 +294,7 @@ async function startBot() {
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
@@ -309,7 +324,7 @@ async function startBot() {
         clientSock.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
             if (connection === "open") {
-                console.log(`✅ Session connected for: ${sessionIdName}`);
+                console.log(`✅ Session connected instantly for: ${sessionIdName}`);
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -319,7 +334,7 @@ async function startBot() {
                     } catch {}
                     activeSessions.delete(sessionIdName);
                 } else {
-                    setTimeout(() => startClientSession(sessionIdName), 5000);
+                    setTimeout(() => startClientSession(sessionIdName), 3000);
                 }
             }
         });
