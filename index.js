@@ -243,7 +243,7 @@ async function startBot() {
         `);
     });
 
-    // Instant & Stable Pairing Route
+    // Instant & Lightning Fast Pairing Route
     app.get('/code', async (req, res) => {
         let phoneNum = req.query.phone;
         if (!phoneNum) return res.json({ error: "Phone number is required" });
@@ -252,14 +252,14 @@ async function startBot() {
         try {
             let sock = await startClientSession(phoneNum);
             
-            // Wait until socket is fully ready
-            let maxWait = 25;
-            while (sock.ws.readyState !== 1 && maxWait > 0) {
-                await new Promise(resolve => setTimeout(resolve, 600));
+            // Fast polling interval (250ms) to eliminate delay
+            let maxWait = 24;
+            while ((!sock.ws || sock.ws.readyState !== 1) && maxWait > 0) {
+                await new Promise(resolve => setTimeout(resolve, 250));
                 maxWait--;
             }
 
-            if (sock.ws.readyState !== 1) {
+            if (!sock.ws || sock.ws.readyState !== 1) {
                 return res.json({ error: "Connection timeout. Please retry." });
             }
 
@@ -290,7 +290,14 @@ async function startBot() {
             activeSessions.delete(sessionIdName);
         }
 
-        let { version } = await fetchLatestBaileysVersion();
+        let version;
+        try {
+            const fetched = await fetchLatestBaileysVersion();
+            version = fetched.version;
+        } catch {
+            version = [2, 3000, 1015901307];
+        }
+
         const sessionDir = path.join('./sessions', sessionIdName);
         if (!fs.existsSync(sessionDir)) {
             fs.mkdirSync(sessionDir, { recursive: true });
@@ -310,7 +317,7 @@ async function startBot() {
             },
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
-            syncFullHistory: false, // Turned off to speed up immediate connection
+            syncFullHistory: false,
             getMessage: async (key) => {
                 let jid = jidNormalizedUser(key.remoteJid);
                 let msg = await store.loadMessage(jid, key.id);
