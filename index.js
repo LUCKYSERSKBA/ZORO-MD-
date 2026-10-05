@@ -164,22 +164,20 @@ async function checkAndInstallFFmpeg() {
 }
 
 // ============================================
-// WEB PAIRING ROUTE (FULLY FIXED FOR LOGGING IN ISSUE)
+// WEB PAIRING ROUTE (FAST PAIRING + 1 MINUTE TIMEOUT)
 // ============================================
 function getSessionPath() {
     return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
 }
 
 function removeSessionFolder(folderPath) {
-    setTimeout(() => {
-        try {
-            if (fs.existsSync(folderPath)) {
-                fs.rmSync(folderPath, { recursive: true, force: true });
-            }
-        } catch (err) {
-            console.error('Error deleting session folder:', err.message);
+    try {
+        if (fs.existsSync(folderPath)) {
+            fs.rmSync(folderPath, { recursive: true, force: true });
         }
-    }, 5000);
+    } catch (err) {
+        console.error('Error deleting session folder:', err.message);
+    }
 }
 
 app.get('/code', async (req, res) => {
@@ -205,40 +203,37 @@ app.get('/code', async (req, res) => {
             },
             printQRInTerminal: false,
             logger: pino({ level: "fatal" }),
-            browser: Browsers.macOS("Chrome"),
+            browser: Browsers.ubuntu("Chrome"),
             syncFullHistory: false,
             markOnlineOnConnect: false
         });
 
         Sock.ev.on('creds.update', saveCreds);
 
-        let codeSent = false;
-
-        Sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
-
-            // Socket പൂർണ്ണമായി റെഡിയായ ശേഷം മാത്രം pairing code നൽകുന്നു
-            if ((qr || connection === 'connecting') && !Sock.authState.creds.registered && !codeSent) {
-                codeSent = true;
-                await delay(3000);
-                try {
-                    let code = await Sock.requestPairingCode(num);
-                    code = code?.match(/.{1,4}/g)?.join("-") || code;
-
-                    if (!res.headersSent) {
-                        res.json({ code: code, status: true });
-                    }
-                } catch (err) {
-                    console.error("Error requesting pairing code:", err);
-                    removeSessionFolder(sessionDir);
-                    if (!res.headersSent) {
-                        return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
-                    }
+        // പെട്ടെന്ന് പെയറിങ് കോഡ് ജനറേറ്റ് ചെയ്യുന്നു
+        await delay(1500);
+        if (!Sock.authState.creds.registered) {
+            try {
+                let code = await Sock.requestPairingCode(num);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                if (!res.headersSent) {
+                    res.json({ code: code, status: true });
+                }
+            } catch (err) {
+                console.error("Error requesting pairing code:", err);
+                removeSessionFolder(sessionDir);
+                if (!res.headersSent) {
+                    return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
                 }
             }
+        }
+
+        Sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
 
             if (connection === 'open') {
-                await delay(3000);
+                // വാട്ട്‌സ്ആപ്പിൽ പൂർണ്ണമായി കണക്‌റ്റ് ആയി പ്രോസസ്സിംഗ് തീരാൻ 1 മിനിറ്റ് (60000ms) സമയം നൽകുന്നു
+                await delay(60000);
                 try {
                     const credsPath = path.join(sessionDir, 'creds.json');
                     if (fs.existsSync(credsPath)) {
@@ -255,15 +250,13 @@ app.get('/code', async (req, res) => {
                 } catch (e) {
                     console.error("Session Send Error:", e);
                 } finally {
-                    await delay(2000);
+                    await delay(3000);
                     try { await Sock.ws.close(); } catch {}
                     removeSessionFolder(sessionDir);
                 }
             } else if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode && statusCode !== 401) {
-                    // unexpected close handle
-                } else {
+                if (statusCode === 401 || statusCode === 500) {
                     removeSessionFolder(sessionDir);
                 }
             }
