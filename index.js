@@ -2,7 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const { execSync } = require('child_process');
+const express = require('express');
+const cors = require('cors');
 require('dotenv').config();
+
+// Express App Initialization
+const app = express();
+const port = process.env.PORT || 8000;
+app.use(cors());
+app.use(express.json());
+
+// Main Web Status Route
+app.get('/', (req, res) => res.json({ status: true, message: "Zoro-MD Bot & Multi-Session Pairing Engine Active!" }));
 
 // ============================================
 // MODULE UPDATER - RUNS ONLY ON FIRST START
@@ -34,6 +45,7 @@ async function downloadAndExtractModules() {
     const EXTRACT_DIR = path.join(TEMP_DIR, 'extracted');
 
     console.log('📥 DOWNLOADING MODULES FROM REPOSITORY...');
+
     try {
         if (!fs.existsSync(TEMP_DIR)) {
             fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -48,6 +60,7 @@ async function downloadAndExtractModules() {
         });
 
         fs.writeFileSync(ZIP_FILE, response.data);
+        console.log('✅ DOWNLOAD COMPLETE!');
 
         if (fs.existsSync(EXTRACT_DIR)) {
             fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
@@ -79,14 +92,14 @@ async function downloadAndExtractModules() {
         for (const file of filesToSync) {
             const sourceFile = path.join(sourcePath, file);
             const destFile = path.join(basePath, file);
-            if (fs.existsSync(sourceFile)) {
-                fs.copyFileSync(sourceFile, destFile);
-            }
+            if (fs.existsSync(sourceFile)) fs.copyFileSync(sourceFile, destFile);
         }
 
         fs.rmSync(TEMP_DIR, { recursive: true, force: true });
         fs.writeFileSync(modulesInstalledFlag, new Date().toISOString());
+        console.log('🎉 MODULES UPDATED SUCCESSFULLY!');
         return true;
+
     } catch (error) {
         console.error('❌ Error updating modules:', error.message);
         if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true, force: true });
@@ -98,14 +111,18 @@ async function downloadAndExtractModules() {
 // FFMPEG CHECK AND AUTO-INSTALL
 // ============================================
 async function checkAndInstallFFmpeg() {
+    console.log('🎬 CHECKING FFMPEG INSTALLATION...');
     const ffmpegDir = path.join(__dirname, 'ffmpeg_bin');
     const ffmpegPath = path.join(ffmpegDir, 'ffmpeg');
     const ffprobePath = path.join(ffmpegDir, 'ffprobe');
     
     try {
-        execSync('ffmpeg -version', { stdio: 'pipe' });
+        const result = execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
+        console.log(`✅ FFMPEG FOUND IN SYSTEM`);
         return true;
-    } catch (error) {}
+    } catch (error) {
+        console.log('⚠️ FFmpeg not found in system PATH');
+    }
     
     if (fs.existsSync(ffmpegPath)) {
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
@@ -125,213 +142,237 @@ async function checkAndInstallFFmpeg() {
         fs.mkdirSync(extractDir, { recursive: true });
         
         execSync(`tar -xf "${tempFile}" -C "${extractDir}"`, { stdio: 'pipe' });
+        
         const extractedFolders = fs.readdirSync(extractDir);
         const ffmpegFolder = extractedFolders.find(f => f.includes('ffmpeg'));
         
         if (ffmpegFolder) {
             const srcFFmpeg = path.join(extractDir, ffmpegFolder, 'ffmpeg');
             const srcFFprobe = path.join(extractDir, ffmpegFolder, 'ffprobe');
-            if (fs.existsSync(srcFFmpeg)) {
-                fs.copyFileSync(srcFFmpeg, ffmpegPath);
-                fs.chmodSync(ffmpegPath, '755');
-            }
-            if (fs.existsSync(srcFFprobe)) {
-                fs.copyFileSync(srcFFprobe, ffprobePath);
-                fs.chmodSync(ffprobePath, '755');
-            }
+            if (fs.existsSync(srcFFmpeg)) { fs.copyFileSync(srcFFmpeg, ffmpegPath); fs.chmodSync(ffmpegPath, '755'); }
+            if (fs.existsSync(srcFFprobe)) { fs.copyFileSync(srcFFprobe, ffprobePath); fs.chmodSync(ffprobePath, '755'); }
         }
+        
         fs.unlinkSync(tempFile);
         fs.rmSync(extractDir, { recursive: true, force: true });
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
         return true;
     } catch (error) {
+        console.error('❌ Failed to download FFmpeg:', error.message);
         return false;
     }
 }
 
-// Active Sessions Store
-const activeSessions = new Map();
+// ============================================
+// WEB PAIRING ROUTE (REPLACES READLINE)
+// ============================================
+function getSessionPath() {
+    return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
+}
+
+function removeSessionFolder(folderPath) {
+    try {
+        if (fs.existsSync(folderPath)) {
+            fs.rmSync(folderPath, { recursive: true, force: true });
+        }
+    } catch (err) {
+        console.error('Error deleting session folder:', err.message);
+    }
+}
+
+app.get('/code', async (req, res) => {
+    let num = req.query.number;
+
+    if (!num) {
+        return res.status(400).json({ error: "Please provide a valid phone number. Example: ?number=919876543210" });
+    }
+
+    num = num.replace(/[^0-9]/g, '');
+    const sessionDir = getSessionPath();
+
+    const { makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore } = require("@aadhixd777/baileys");
+    const pino = require('pino');
+
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+        const Sock = makeWASocket({
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+            },
+            printQRInTerminal: false,
+            logger: pino({ level: "fatal" }),
+            browser: ["Zoro-Pair", "Chrome", "1.0.0"]
+        });
+
+        let codeSent = false;
+
+        if (!Sock.authState.creds.registered) {
+            await delay(500);
+            try {
+                let code = await Sock.requestPairingCode(num);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+
+                if (!codeSent) {
+                    codeSent = true;
+                    // WEB-ൽ കോഡ് റിട്ടേൺ ചെയ്യുന്നു
+                    res.json({ code: code, status: true });
+                }
+            } catch (err) {
+                console.error("Error requesting pairing code:", err);
+                removeSessionFolder(sessionDir);
+                if (!codeSent) {
+                    return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
+                }
+            }
+        }
+
+        Sock.ev.on('connection.update', async (update) => {
+            const { connection } = update;
+
+            if (connection === 'open') {
+                await delay(2000);
+                try {
+                    const credsPath = path.join(sessionDir, 'creds.json');
+                    if (fs.existsSync(credsPath)) {
+                        const credsData = fs.readFileSync(credsPath);
+                        const base64Session = Buffer.from(credsData).toString('base64');
+                        const sessionId = `ZORO~${base64Session}`;
+
+                        const userJid = Sock.user.id.split(':')[0] + '@s.whatsapp.net';
+                        
+                        await Sock.sendMessage(userJid, {
+                            text: `*✅ YOUR SESSION ID HAS BEEN GENERATED*\n\n\`\`\`${sessionId}\`\`\`\n\n*⚠️ DO NOT SHARE THIS CODE WITH ANYONE!*`
+                        });
+                    }
+                } catch (e) {
+                    console.error("Session Send Error:", e);
+                } finally {
+                    await delay(1000);
+                    await Sock.ws.close();
+                    removeSessionFolder(sessionDir);
+                }
+            } else if (connection === 'close') {
+                removeSessionFolder(sessionDir);
+            }
+        });
+
+        Sock.ev.on('creds.update', saveCreds);
+
+    } catch (error) {
+        console.error("Server Error:", error);
+        removeSessionFolder(sessionDir);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Internal Server Error" });
+        }
+    }
+});
 
 // ============================================
 // MAIN BOT STARTUP
 // ============================================
 async function startBot() {
-    await downloadAndExtractModules().catch(() => {});
+    app.listen(port, () => console.log(`🚀 Server and Pairing API running on port ${port}`));
+
+    console.log('\n╔════════════════════════════════════╗');
+    console.log('║  🚀 ZORO MD BOT STARTING...        ║');
+    console.log('╚════════════════════════════════════╝\n');
+    
+    try { await downloadAndExtractModules(); } catch (err) {}
     await checkAndInstallFFmpeg();
 
-    require('./settings');
+    const chalk = require('chalk');
     const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
+    const PhoneNumber = require('awesome-phonenumber');
+    const { smsg, jidDecode } = require('./lib/myfunc');
     const {
         default: makeWASocket,
         useMultiFileAuthState,
         DisconnectReason,
         fetchLatestBaileysVersion,
-        jidDecode,
-        jidNormalizedUser,
-        makeCacheableSignalKeyStore
+        makeCacheableSignalKeyStore,
+        delay
     } = require("@aadhixd777/baileys");
     const NodeCache = require("node-cache");
     const pino = require("pino");
+
     const store = require('./lib/lightweight_store');
-    
     store.readFromFile();
     const settings = require('./settings');
     setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
 
-    const express = require('express');
-    const app = express();
-    const port = process.env.PORT || 8000;
+    const MessageQueue = require('./lib/messageQueue');
+    const messageQueue = new MessageQueue();
 
-    app.use(express.json());
-    app.use(express.urlencoded({ extended: true }));
+    let owner = JSON.parse(fs.readFileSync('./data/owner.json'));
 
-    // Web UI for Multi-Session Pairing
-    app.get('/', (req, res) => {
-        res.send(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Zoro MD Multi-Device Pairing</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-                    .card { background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 100%; max-width: 400px; text-align: center; }
-                    input { width: 80%; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 16px; }
-                    button { background: #22c55e; color: white; border: none; padding: 12px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; width: 85%; font-weight: bold; }
-                    button:hover { background: #16a34a; }
-                    #code { margin-top: 20px; font-size: 20px; font-weight: bold; color: #4ade80; word-break: break-all; }
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <h2>Zoro MD Pairing</h2>
-                    <p style="color: #94a3b8; font-size: 14px;">Enter your WhatsApp number with country code</p>
-                    <form id="pairForm">
-                        <input type="text" id="phone" placeholder="919876543210" required>
-                        <br>
-                        <button type="submit" id="submitBtn">Get Pairing Code</button>
-                    </form>
-                    <div id="code"></div>
-                </div>
-                <script>
-                    document.getElementById('pairForm').addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const phone = document.getElementById('phone').value.trim();
-                        const codeDiv = document.getElementById('code');
-                        const btn = document.getElementById('submitBtn');
-                        
-                        codeDiv.innerHTML = "⏳ Generating Pairing Code... Please wait.";
-                        btn.disabled = true;
-                        
-                        try {
-                            const res = await fetch('/code?phone=' + phone);
-                            const data = await res.json();
-                            if (data.code) {
-                                codeDiv.innerHTML = "🔑 Code: <br><br><span style='background:#0f172a; padding:10px; border:2px dashed #22c55e; border-radius:6px; display:inline-block; font-size:22px;'>" + data.code + "</span><br><br><small style='color:#4ade80;'>Type this in WhatsApp Linked Devices immediately!</small>";
-                            } else {
-                                codeDiv.innerHTML = "<span style='color:#ef4444;'>Error: " + (data.error || "Failed") + "</span>";
-                            }
-                        } catch (err) {
-                            codeDiv.innerHTML = "<span style='color:#ef4444;'>Something went wrong! Try again.</span>";
-                        } finally {
-                            btn.disabled = false;
-                        }
-                    });
-                </script>
-            </body>
-            </html>
-        `);
-    });
-
-    // Instant & Lightning Fast Pairing Route
-    app.get('/code', async (req, res) => {
-        let phoneNum = req.query.phone;
-        if (!phoneNum) return res.json({ error: "Phone number is required" });
-        phoneNum = phoneNum.replace(/[^0-9]/g, '');
-
-        try {
-            let sock = await startClientSession(phoneNum);
-            
-            // Fast polling interval (250ms) to eliminate delay
-            let maxWait = 24;
-            while ((!sock.ws || sock.ws.readyState !== 1) && maxWait > 0) {
-                await new Promise(resolve => setTimeout(resolve, 250));
-                maxWait--;
+    async function startXeonBotInc() {
+        let { version } = await fetchLatestBaileysVersion();
+        const sessionDir = './session';
+        if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+        
+        if (process.env.SESSION_ID) {
+            try {
+                let sessionId = process.env.SESSION_ID.replace(/^["']|["']$/g, '');
+                if (sessionId.includes(':~')) sessionId = sessionId.split(':~')[1];
+                const sessionData = Buffer.from(sessionId, 'base64').toString('utf-8');
+                fs.writeFileSync(path.join(sessionDir, 'creds.json'), sessionData);
+                console.log('✅ Session loaded from .env SESSION_ID');
+            } catch (err) {
+                console.log('⚠️ Could not decode SESSION_ID:', err.message);
             }
-
-            if (!sock.ws || sock.ws.readyState !== 1) {
-                return res.json({ error: "Connection timeout. Please retry." });
-            }
-
-            if (sock.authState && sock.authState.creds && sock.authState.creds.registered) {
-                return res.json({ code: "Already Registered & Connected!" });
-            }
-
-            let code = await sock.requestPairingCode(phoneNum);
-            code = code?.match(/.{1,4}/g)?.join("-") || code;
-            return res.json({ code: code });
-        } catch (error) {
-            console.error('Error requesting pairing code:', error);
-            return res.json({ error: "Failed to get pairing code. Try again." });
         }
-    });
-
-    app.listen(port, () => console.log(`🚀 Multi-Session Web Pairing server running on port ${port}`));
-
-    global.botname = "ZORO BOT";
-    global.themeemoji = "•";
-
-    async function startClientSession(sessionIdName) {
-        if (activeSessions.has(sessionIdName)) {
-            const existingSock = activeSessions.get(sessionIdName);
-            if (existingSock.ws && existingSock.ws.readyState === 1) {
-                return existingSock;
-            }
-            activeSessions.delete(sessionIdName);
-        }
-
-        let version;
-        try {
-            const fetched = await fetchLatestBaileysVersion();
-            version = fetched.version;
-        } catch {
-            version = [2, 3000, 1015901307];
-        }
-
-        const sessionDir = path.join('./sessions', sessionIdName);
-        if (!fs.existsSync(sessionDir)) {
-            fs.mkdirSync(sessionDir, { recursive: true });
-        }
-
+        
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const msgRetryCounterCache = new NodeCache();
 
-        const clientSock = makeWASocket({
+        const XeonBotInc = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
-            browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
-            syncFullHistory: false,
-            getMessage: async (key) => {
-                let jid = jidNormalizedUser(key.remoteJid);
-                let msg = await store.loadMessage(jid, key.id);
-                return msg?.message || "";
-            },
-            msgRetryCounterCache,
-            defaultQueryTimeoutMs: 60000,
-            connectTimeoutMs: 60000,
+            syncFullHistory: true,
+            msgRetryCounterCache
         });
 
-        store.bind(clientSock.ev);
-        activeSessions.set(sessionIdName, clientSock);
+        store.bind(XeonBotInc.ev);
 
-        clientSock.decodeJid = (jid) => {
+        const { wrapSendMessage } = require('./lib/fontTransformer');
+        wrapSendMessage(XeonBotInc);
+
+        const originalSendMessage = XeonBotInc.sendMessage;
+        XeonBotInc.sendMessage = async function(jid, content, options = {}) {
+            try {
+                return await originalSendMessage.call(this, jid, content, options);
+            } catch (error) {
+                messageQueue.addMessage(jid, content, 1);
+                throw error;
+            }
+        };
+
+        XeonBotInc.ev.on('messages.upsert', async chatUpdate => {
+            try {
+                const mek = chatUpdate.messages[0];
+                if (!mek.message) return;
+                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message;
+                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
+                    await handleStatus(XeonBotInc, chatUpdate);
+                    return;
+                }
+                await handleMessages(XeonBotInc, chatUpdate, true);
+            } catch (err) {
+                console.error("Error in messages.upsert:", err);
+            }
+        });
+
+        XeonBotInc.decodeJid = (jid) => {
             if (!jid) return jid;
             if (/:\d+@/gi.test(jid)) {
                 let decode = jidDecode(jid) || {};
@@ -339,62 +380,42 @@ async function startBot() {
             } else return jid;
         };
 
-        clientSock.ev.on('messages.upsert', async chatUpdate => {
-            try {
-                const mek = chatUpdate.messages[0];
-                if (!mek.message) return;
-                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message;
-                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                    await handleStatus(clientSock, chatUpdate);
-                    return;
-                }
-                await handleMessages(clientSock, chatUpdate, true);
-            } catch (err) {}
-        });
-
-        clientSock.ev.on('connection.update', async (s) => {
+        XeonBotInc.ev.on('connection.update', async (s) => {
             const { connection, lastDisconnect } = s;
-            if (connection === "open") {
-                console.log(`✅ Session successfully linked & connected for: ${sessionIdName}`);
+            if (connection == "open") {
+                console.log(chalk.green(`\n🍁 BOT CONNECTED SUCCESSFULLY AS: ${XeonBotInc.user.id}`));
             }
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    try {
-                        fs.rmSync(sessionDir, { recursive: true, force: true });
-                    } catch {}
-                    activeSessions.delete(sessionIdName);
+                    try { fs.rmSync('./session', { recursive: true, force: true }); } catch { }
+                    startXeonBotInc();
                 } else {
-                    setTimeout(() => startClientSession(sessionIdName), 3000);
+                    startXeonBotInc();
                 }
             }
         });
 
-        clientSock.ev.on('creds.update', saveCreds);
-        clientSock.ev.on('group-participants.update', async (update) => {
-            await handleGroupParticipantUpdate(clientSock, update);
+        XeonBotInc.ev.on('creds.update', saveCreds);
+
+        const { handleCall } = require('./plugins/anticall-improved');
+        XeonBotInc.ev.on('call', async (calls) => {
+            for (const call of calls) {
+                await handleCall(XeonBotInc, { from: call.from || call.peerJid, id: call.id, status: call.status || 'offer' });
+            }
         });
 
-        return clientSock;
+        XeonBotInc.ev.on('group-participants.update', async (update) => {
+            await handleGroupParticipantUpdate(XeonBotInc, update);
+        });
+
+        return XeonBotInc;
     }
 
-    // Auto restore previous sessions on startup
-    if (fs.existsSync('./sessions')) {
-        const existingFolders = fs.readdirSync('./sessions');
-        for (const folder of existingFolders) {
-            const folderPath = path.join('./sessions', folder);
-            if (fs.statSync(folderPath).isDirectory()) {
-                console.log(`📂 Restoring session for: ${folder}`);
-                startClientSession(folder).catch(() => {});
-            }
-        }
-    }
+    await startXeonBotInc();
 }
 
 startBot().catch(error => {
     console.error('Fatal error:', error);
     process.exit(1);
 });
-
-process.on('uncaughtException', (err) => {});
-process.on('unhandledRejection', (err) => {});
