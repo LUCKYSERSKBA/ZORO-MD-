@@ -164,20 +164,22 @@ async function checkAndInstallFFmpeg() {
 }
 
 // ============================================
-// WEB PAIRING ROUTE (REPLACES READLINE)
+// WEB PAIRING ROUTE (FIXED & OPTIMIZED)
 // ============================================
 function getSessionPath() {
     return path.join(__dirname, 'temp_sessions', `session_${Date.now()}_${Math.random().toString(36).substring(7)}`);
 }
 
 function removeSessionFolder(folderPath) {
-    try {
-        if (fs.existsSync(folderPath)) {
-            fs.rmSync(folderPath, { recursive: true, force: true });
+    setTimeout(() => {
+        try {
+            if (fs.existsSync(folderPath)) {
+                fs.rmSync(folderPath, { recursive: true, force: true });
+            }
+        } catch (err) {
+            console.error('Error deleting session folder:', err.message);
         }
-    } catch (err) {
-        console.error('Error deleting session folder:', err.message);
-    }
+    }, 5000);
 }
 
 app.get('/code', async (req, res) => {
@@ -203,36 +205,36 @@ app.get('/code', async (req, res) => {
             },
             printQRInTerminal: false,
             logger: pino({ level: "fatal" }),
-            browser: ["Zoro-Pair", "Chrome", "1.0.0"]
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            syncFullHistory: false,
+            markOnlineOnConnect: false
         });
 
-        let codeSent = false;
+        Sock.ev.on('creds.update', saveCreds);
 
         if (!Sock.authState.creds.registered) {
-            await delay(500);
+            await delay(1500);
             try {
                 let code = await Sock.requestPairingCode(num);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
 
-                if (!codeSent) {
-                    codeSent = true;
-                    // WEB-ൽ കോഡ് റിട്ടേൺ ചെയ്യുന്നു
+                if (!res.headersSent) {
                     res.json({ code: code, status: true });
                 }
             } catch (err) {
                 console.error("Error requesting pairing code:", err);
                 removeSessionFolder(sessionDir);
-                if (!codeSent) {
+                if (!res.headersSent) {
                     return res.status(500).json({ error: "Failed to generate pairing code. Try again!" });
                 }
             }
         }
 
         Sock.ev.on('connection.update', async (update) => {
-            const { connection } = update;
+            const { connection, lastDisconnect } = update;
 
             if (connection === 'open') {
-                await delay(2000);
+                await delay(3000);
                 try {
                     const credsPath = path.join(sessionDir, 'creds.json');
                     if (fs.existsSync(credsPath)) {
@@ -249,16 +251,19 @@ app.get('/code', async (req, res) => {
                 } catch (e) {
                     console.error("Session Send Error:", e);
                 } finally {
-                    await delay(1000);
-                    await Sock.ws.close();
+                    await delay(2000);
+                    try { await Sock.ws.close(); } catch {}
                     removeSessionFolder(sessionDir);
                 }
             } else if (connection === 'close') {
-                removeSessionFolder(sessionDir);
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                if (statusCode && statusCode !== 401) {
+                    // unexpected close handle
+                } else {
+                    removeSessionFolder(sessionDir);
+                }
             }
         });
-
-        Sock.ev.on('creds.update', saveCreds);
 
     } catch (error) {
         console.error("Server Error:", error);
