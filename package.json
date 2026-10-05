@@ -22,6 +22,7 @@
     "cheerio": "^1.0.0-rc.12",
     "combined-stream": "^1.0.8",
     "cookie": "^0.5.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "events": "^3.3.0",
     "express": "^5.2.1",
