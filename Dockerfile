@@ -1,10 +1,11 @@
 FROM node:20-slim
 
-# Install system dependencies
+# Install system dependencies (added unzip)
 RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
     webp \
+    unzip \
     build-essential \
     python3 \
     && rm -rf /var/lib/apt/lists/*
